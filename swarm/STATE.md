@@ -1,12 +1,20 @@
-# Stage: 0-DONE
+# Stage: 1-SOLO (7/8 merged)
 
 Single source of truth for the swarm. Updated by the coordinator only.
 
 ```yaml
-stage: 0-DONE
-spawned: none
-agents: {}
-next: spawn 8 seniors (Section 4 of docs/CONTRACTS.md)
+stage: 1-SOLO
+spawned: 8
+agents:
+  audio-detector: merged (32 tests)
+  motion-detector: running
+  vision-detector: merged (tests green)
+  fusion-engine: merged (15 tests)
+  buffer-crypto: merged (15 tests)
+  alert-consent: merged (16 tests)
+  evidence-store: merged (21 tests)
+  integration-safety: merged (8 tests)
+next: merge motion-detector, run barrier suite, open roundtable
 barrier: pending
 roundtable_round: 0
 signoff_votes: 0/8
@@ -23,17 +31,8 @@ signoff_votes: 0/8
 | 4-SIGNOFF | SHIP/REJECT vote | >= 6/8 SHIP |
 | 5-FINAL | deliverables + outside jury | deliverables complete |
 
-## Solo stage roles
-
-1. audio-detector
-2. motion-detector
-3. vision-detector
-4. fusion-engine
-5. buffer-crypto
-6. alert-consent
-7. evidence-store
-8. integration-safety
-
 ## Progress log
 
 - 2026-11-11: Stage 0 complete. Contracts, shared types, config, territory map and 8 task briefs written.
+- 2026-11-11: Seven of eight solo branches merged; full suite green at 100 tests.
+- 2026-11-11: Coordinator e2e smoke test added (`tests/test_integration_e2e.py`) to prove composition.
