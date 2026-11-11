@@ -1,0 +1,107 @@
+# Default configuration for Human BlackBox Edge AI Emergency Detection System
+
+# Model assumptions
+model_version: "1.0.0"
+assumed_model_size: "8B"
+assumed_edge_compute: "NVIDIA Jetson Nano"
+assumed_latency_ms: "50ms"
+assumed_power_watts: "5W"
+
+# Sensor assumptions
+sensor_types:
+  temperature: "thermistor"
+  pressure: "barometer"
+  motion: "accelerometer"
+  audio: "microphone"
+
+# Emergency detection thresholds (system-level, documented in docs/ASSUMPTIONS.md)
+emergency_thresholds:
+  temperature_high: 40.0  # Celsius
+  temperature_low: 10.0   # Celsius
+  motion_activity: 0.8     # normalized value
+  audio_noise: 80.0        # dB
+
+# Per-modality detector configuration
+detectors:
+  audio:
+    model_path: "modules/models/yamnet.tflite"
+    # YAMNet AudioSet classes treated as emergency cues
+    emergency_classes:
+      - "Screaming"
+      - "Scream"
+      - "Crying, sobbing"
+      - "Glass"
+      - "Shatter"
+      - "Crash"
+      - "Bang"
+      - "Thump, thud"
+      - "Explosion"
+      - "Fire alarm"
+      - "Alarm"
+      - "Siren"
+    threshold: 0.50          # score at or above -> EMERGENCY
+    sample_rate_hz: 16000
+    window_sec: 0.975        # YAMNet input window
+  motion:
+    model_path: "modules/models/motion_lstm.onnx"
+    threshold: 0.80          # normalized activity at or above -> EMERGENCY
+    sequence_length: 16      # LSTM timesteps
+    freefall_g: 0.35         # |a| below this for >= freefall_min_samples -> impact risk
+    freefall_min_samples: 3
+    impact_g: 3.0            # |a| spike at or above -> impact
+    window_sec: 1.0
+  vision:
+    model_path: "modules/models/yolov8n.pt"
+    threshold: 0.50
+    # COCO classes treated as emergency cues
+    emergency_classes:
+      - "person"
+      - "fire hydrant"
+      - "knife"
+      - "car"
+      - "motorcycle"
+    min_person_area_ratio: 0.15   # large/close person -> possible collapse
+    frame_width: 640
+    frame_height: 480
+
+# Fusion strategy configuration
+fusion:
+  weights:
+    AUDIO: 0.35
+    MOTION: 0.40
+    VISION: 0.25
+  threshold: 0.65            # weighted score at or above -> EMERGENCY
+  min_confidence: 0.30       # below this a modality is down-weighted
+  require_two_modalities: true  # at least 2 modalities must report
+
+# System behavior
+inference_timeout_ms: 100
+batch_size: 16
+buffer_size: 1024
+
+# Rolling buffer (evidence retention before/around an event)
+buffer:
+  size_sec: 60               # 60-second rolling window
+  encryption: "AES-256-GCM"  # # ASSUMPTION: algorithm provided by platform crypto
+
+# Alert behaviour
+alert:
+  countdown_sec: 15          # user-cancellable countdown before sending
+  require_consent: true
+  max_retries: 3
+
+# Safety non-negotiables (see docs/CONTRACTS.md)
+safety:
+  recording_indicator: true      # visible indicator whenever recording
+  require_mic_consent: true
+  require_camera_consent: true
+  raw_media_on_device: true      # no upload without explicit opt-in
+  share_evidence_default: false  # opt-in, not opt-out
+
+# Assumptions documented in docs/ASSUMPTIONS.md
+assumptions:
+  - "Edge device has constant power supply"
+  - "Network connectivity available for periodic sync"
+  - "Sensor calibration performed before deployment"
+  - "False positive rate < 1%"
+  - "False negative rate < 0.5%"

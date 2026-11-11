@@ -1,0 +1,15 @@
+# Backups and caches
+backup/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime artifacts (never commit evidence or buffers)
+*.evidence
+buffer.enc
+*.enc
+modules/models/
+
+# Local env
+.venv/
+.env
