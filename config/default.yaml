@@ -42,17 +42,18 @@ detectors:
     threshold: 0.50          # score at or above -> EMERGENCY
     sample_rate_hz: 16000
     window_sec: 0.975        # YAMNet input window
+    audio_noise: 75.0        # dB noise gate
   motion:
     model_path: "modules/models/motion_lstm.onnx"
-    threshold: 0.80          # normalized activity at or above -> EMERGENCY
+    threshold: 0.65          # normalized activity at or above -> EMERGENCY
     sequence_length: 16      # LSTM timesteps
-    freefall_g: 0.35         # |a| below this for >= freefall_min_samples -> impact risk
+    freefall_g: 0.45         # |a| below this for >= freefall_min_samples -> impact risk
     freefall_min_samples: 3
     impact_g: 3.0            # |a| spike at or above -> impact
     window_sec: 1.0
   vision:
     model_path: "modules/models/yolov8n.pt"
-    threshold: 0.50
+    threshold: 0.45
     # COCO classes treated as emergency cues
     emergency_classes:
       - "person"
@@ -66,13 +67,19 @@ detectors:
 
 # Fusion strategy configuration
 fusion:
+  mode: "adaptive"  # "simple", "adaptive", "dominant", or "gated"
   weights:
-    AUDIO: 0.35
-    MOTION: 0.40
+    AUDIO: 0.40
+    MOTION: 0.35
     VISION: 0.25
-  threshold: 0.65
+  threshold: 0.55  # fusion threshold
   min_confidence: 0.30
   require_two_modalities: true
+  # Temporal coherence: motion should precede audio by this window
+  temporal_window: 0.35
+  temporal_precedence: 0.18  # motion must lead audio by this much for strong signal
+  # Event duration: track first-to-last timestamp per modality
+  event_duration_window: 0.35
 
 # System behavior
 inference_timeout_ms: 100
@@ -84,24 +91,43 @@ buffer:
   size_sec: 60               # 60-second rolling window
   encryption: "AES-256-GCM"  # # ASSUMPTION: algorithm provided by platform crypto
 
+# Ambient baseline tracking: rolling statistics for each modality's raw features
+# Used to normalize scores against typical activity levels (day/night, indoor/outdoor)
+ambient_baselines:
+  enabled: true
+  window_sec: 30            # rolling window for ambient mean/std
+  update_frequency_sec: 5   # how often to update baseline stats
+  per_modality:
+    AUDIO:
+      features:
+        - "energy"
+        - "spectral_centroid"
+        - "spectral_rolloff"
+    MOTION:
+      features:
+        - "accel_magnitude"
+        - "gyro_magnitude"
+        - "temp"
+    VISION:
+      features:
+        - "brightness"
+        - "edge_density"
+        - "red_dominance"
+
+# Context tags: metadata describing environmental conditions
+# Injected into ModalityScore.raw_features as "context_tags"
+context_tags:
+  enabled: true
+  sources:
+    - "ambient_light"    # day/night from LDR or separate light sensor
+    - "proximity"        # indoor/outdoor from IR or distance sensor
+    - "time_of_day"      # morning/afternoon/night from system clock
+    - "weather"          # rain/cloudy from barometer or external API
+  resolution_sec: 30     # how often context tags are updated
+
 # Alert behaviour
 alert:
   countdown_sec: 15          # user-cancellable countdown before sending
   require_consent: true
   max_retries: 3
-
-# Safety non-negotiables (see docs/CONTRACTS.md)
-safety:
-  recording_indicator: true      # visible indicator whenever recording
-  require_mic_consent: true
-  require_camera_consent: true
-  raw_media_on_device: true      # no upload without explicit opt-in
-  share_evidence_default: false  # opt-in, not opt-out
-
-# Assumptions documented in docs/ASSUMPTIONS.md
-assumptions:
-  - "Edge device has constant power supply"
-  - "Network connectivity available for periodic sync"
-  - "Sensor calibration performed before deployment"
-  - "False positive rate < 1%"
-  - "False negative rate < 0.5%"
+  countdown_style: "tick"

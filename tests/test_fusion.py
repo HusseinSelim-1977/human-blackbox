@@ -51,9 +51,12 @@ def test_empty_input_is_indeterminate():
     assert result.modality_type == FUSION
     assert result.raw_features["modalities_count"] == 0
     assert result.raw_features["agreement"] == 0.0
+    # temporal_coherence is included for temporal-aware fusion logic
     assert set(result.raw_features) == {
         "per_modality", "weights_used", "weighted_score",
         "threshold", "modalities_count", "agreement",
+        "event_start", "event_end", "duration_span",
+        "temporal_coherence",
     }
 
 
@@ -202,5 +205,5 @@ def test_uses_repository_default_config():
     ]
     result = FusionStrategy(config).decide(scores, config)
     assert result.decision == EMERGENCY
-    assert result.raw_features["threshold"] == pytest.approx(0.65)
-    assert result.raw_features["weights_used"][AUDIO] == pytest.approx(0.35 / 0.75)
+    assert result.raw_features["threshold"] == pytest.approx(0.55)
+    assert result.raw_features["weights_used"][AUDIO] == pytest.approx(0.40 / 0.75)

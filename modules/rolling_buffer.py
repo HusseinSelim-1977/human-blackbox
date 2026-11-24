@@ -12,6 +12,9 @@ derived via ``hashlib.sha256(key + nonce)`` (extended per 32-byte block
 with a big-endian counter for longer payloads) and authenticated with
 HMAC-SHA256. Production uses the platform's AES-256-GCM (config key
 ``buffer.encryption``); this class keeps the same file layout contract.
+
+Ambient baseline tracking: maintains rolling mean/std for each modality's
+raw features to enable normalized scoring against typical activity levels.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import hmac
 import os
 import pickle
 import threading
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from modules.types import (
     AudioChunk,
@@ -33,6 +36,9 @@ from modules.types import (
 
 # One in-memory entry: (chunk timestamp, chunk, paired score).
 _Entry = Tuple[float, SensorChunk, ModalityScore]
+
+# Ambient baseline state: per-modality rolling stats (mean, std) for feature keys
+_AmbientState = Dict[str, Dict[str, List[float]]]
 
 # Contract bucket keys for get_recent(), by chunk type.
 _BUCKETS: Dict[type, str] = {
@@ -52,15 +58,24 @@ class RollingBuffer:
     expired on every append and after every load. ``get_recent`` returns
     per-modality buckets of ``(chunk, score)`` tuples ordered oldest to
     newest.
+
+    Ambient baseline tracking: maintains rolling mean/std for each
+    modality's raw features to enable normalized scoring against typical
+    activity levels.
     """
 
     def __init__(self, buffer_size_sec: int, encryption_key: str, *,
-                 storage_path: str = "buffer.enc") -> None:
+                 storage_path: str = "buffer.enc",
+                 ambient_window_sec: int = 30,
+                 ambient_features: Dict[str, List[str]] = None) -> None:
         """Create an empty buffer.
 
         ``storage_path`` is keyword-only (# ASSUMPTION: compatible
         extension of the CONTRACTS.md signature, which names only
         ``buffer_size_sec`` and ``encryption_key``).
+
+        ``ambient_window_sec``: rolling window for baseline stats.
+        ``ambient_features``: per-modality feature keys to track.
         """
         if buffer_size_sec <= 0:
             raise ValueError("buffer_size_sec must be positive")
@@ -72,13 +87,29 @@ class RollingBuffer:
         self._entries: List[_Entry] = []
         self._lock = threading.Lock()
 
+        # Ambient baseline state: {"audio": {"energy": [v1, v2, ...]}, ...}
+        self._ambient_window = ambient_window_sec
+        self._ambient_features = ambient_features or {
+            "audio": ["energy", "spectral_centroid", "spectral_rolloff"],
+            "motion": ["accel_magnitude", "gyro_magnitude", "temp"],
+            "vision": ["brightness", "edge_density", "red_dominance"],
+        }
+        self._ambient_state: _AmbientState = {
+            "audio": {feat: [] for feat in self._ambient_features["audio"]},
+            "motion": {feat: [] for feat in self._ambient_features["motion"]},
+            "vision": {feat: [] for feat in self._ambient_features["vision"]},
+        }
+
     # ------------------------------------------------------------------
     # Contract methods
     # ------------------------------------------------------------------
 
     def append(self, data_chunk: Union[AudioChunk, ImuSample, Frame],
                modality_score: ModalityScore) -> None:
-        """Append a chunk with its score, then expire stale entries."""
+        """Append a chunk with its score, then expire stale entries.
+
+        Also updates ambient baseline stats for the chunk's modality.
+        """
         if not isinstance(data_chunk, (AudioChunk, ImuSample, Frame)):
             raise TypeError(f"data_chunk must be an AudioChunk, ImuSample or "
                             f"Frame, got {type(data_chunk).__name__}")
@@ -90,6 +121,11 @@ class RollingBuffer:
                 (float(data_chunk.timestamp), data_chunk, modality_score)
             )
             self._expire_locked()
+            # Update ambient baselines for this modality
+            self._update_ambient_baseline(
+                type(data_chunk),
+                modality_score.raw_features,
+            )
 
     def get_recent(self, seconds: int) -> dict:
         """Return the last ``seconds`` of data, capped to the window.
@@ -194,3 +230,44 @@ class RollingBuffer:
             ):
                 raise ValueError("stored payload holds a malformed entry")
         return [(float(ts), chunk, score) for ts, chunk, score in entries]
+
+    def _update_ambient_baseline(
+        self, modality: type, features: Dict[str, Any]
+    ) -> None:
+        """Update rolling mean/std for a modality's features.
+
+        Maintains a sliding window of feature values and computes
+        running mean/std for each tracked feature.
+        """
+        modality_key = _BUCKETS[modality]
+        for feat in self._ambient_features[modality_key]:
+            if feat not in features:
+                continue
+            val = float(features[feat])
+            self._ambient_state[modality_key][feat].append(val)
+            # Trim to window size
+            self._ambient_state[modality_key][feat] = self._ambient_state[
+                modality_key
+            ][feat][-self._ambient_window :]
+
+    def get_ambient_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Return current ambient baseline stats per modality.
+
+        Returns mean and std for each tracked feature, or None if
+        insufficient samples.
+        """
+        stats = {}
+        for modality, features in self._ambient_state.items():
+            if not features:
+                continue
+            mod_stats = {}
+            for feat in features:
+                vals = features[feat]
+                if len(vals) < 2:
+                    mod_stats[feat] = {"mean": vals[0], "std": 0.0, "count": 1}
+                else:
+                    mean = sum(vals) / len(vals)
+                    variance = sum((x - mean) ** 2 for x in vals) / len(vals)
+                    mod_stats[feat] = {"mean": mean, "std": variance ** 0.5, "count": len(vals)}
+            stats[modality] = mod_stats
+        return stats

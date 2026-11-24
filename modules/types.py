@@ -70,20 +70,35 @@ class Frame:
 
 
 class ModalityScore:
-    """Score from a single modality detector (or from fusion)."""
+    """Score from a single modality detector (or from fusion).
+
+    Extends the base contract with:
+      - ``normalized_score``: score relative to ambient baseline (0-1 range)
+      - ``baseline_mean`` and ``baseline_std``: rolling window stats for
+        this modality's raw features
+      - ``context_tags``: metadata describing environmental conditions
+    """
 
     def __init__(self, score: float, confidence: float, decision: str,
                  timestamp: float, modality_type: str,
-                 raw_features: Dict[str, Any]):
+                 raw_features: Dict[str, Any],
+                 normalized_score: float = 1.0,
+                 baseline_mean: Dict[str, float] = None,
+                 baseline_std: Dict[str, float] = None,
+                 context_tags: Dict[str, str] = None):
         self.score = score
         self.confidence = confidence
         self.decision = decision
         self.timestamp = timestamp
         self.modality_type = modality_type
         self.raw_features = raw_features
+        self.normalized_score = normalized_score
+        self.baseline_mean = baseline_mean or {}
+        self.baseline_std = baseline_std or {}
+        self.context_tags = context_tags or {}
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "score": self.score,
             "confidence": self.confidence,
             "decision": self.decision,
@@ -91,6 +106,15 @@ class ModalityScore:
             "modality_type": self.modality_type,
             "raw_features": self.raw_features,
         }
+        if self.normalized_score != 1.0:
+            d["normalized_score"] = self.normalized_score
+        if self.baseline_mean:
+            d["baseline_mean"] = self.baseline_mean
+        if self.baseline_std:
+            d["baseline_std"] = self.baseline_std
+        if self.context_tags:
+            d["context_tags"] = self.context_tags
+        return d
 
     def __repr__(self) -> str:
         return (f"ModalityScore({self.modality_type}: {self.decision} "
