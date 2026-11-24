@@ -1,6 +1,6 @@
 # Barrier Test Run
 
-- started: 2026-11-12T09:37:12.039167+00:00
+- started: 2026-11-24T07:13:32.527964+00:00
 - command: `python -m pytest tests/ -v`
 - exit code: 0
 
@@ -9,7 +9,7 @@
 platform linux -- Python 3.14.10, pytest-9.2.0, pluggy-1.7.0 -- /usr/bin/python
 cachedir: .pytest_cache
 rootdir: /home/MASTER-H/Documents/Bachelor Thesis/human-blackbox
-plugins: dash-4.5.0
+plugins: anyio-4.16.0, dash-4.5.0, platformdirs-4.14.5
 collecting ... collected 150 items
 
 tests/test_alert_sender.py::test_full_countdown_returns_true PASSED      [  0%]
@@ -172,5 +172,5 @@ tests/test_vision_detector.py::test_full_config_dict_is_accepted PASSED  [100%]
     @pytest.mark.tryfirst
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-======================== 150 passed, 1 warning in 0.32s ========================
+======================== 150 passed, 1 warning in 0.24s ========================
 ```

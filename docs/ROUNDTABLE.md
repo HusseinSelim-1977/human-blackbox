@@ -6,24 +6,29 @@ the full suite has been recorded in `swarm/results/barrier.md`.
 ## Rounds
 
 ### Round 1 — Judge
+
 Each senior reviews the consolidated solo work (all eight modules + tests) and
 writes `swarm/reviews/<role>-judge.md`:
+
 - verdict per module: PASS / CONCERN / FAIL
 - score 1-5 for clarity, correctness, contract compliance, safety
 - concrete issues, each with file + line + proposed fix
 
 ### Round 2 — Consolidate
+
 The coordinator merges Round 1 reviews into `swarm/reviews/consolidated.md`,
 deduplicates issues and files each one as `swarm/issues/ISSUE-<nn>.md` with
 severity (blocker / major / minor), owner role, and acceptance check.
 
 ### Round 3 — Jointly modify
+
 Owners fix their own issues in their own territories. Cross-territory fixes are
 proposed in the issue file and applied only by the owning role. Every fix must
 add or update a test. Record what changed in the issue file (`status: fixed`,
 commit/commit-less diff summary, test command + output).
 
 ### Round 4 — Re-judge
+
 Every senior re-reviews the fixed tree and writes
 `swarm/reviews/<role>-rejudge.md` with a 1-5 score and PASS/FAIL. Any remaining
 blocker blocks sign-off.
@@ -32,7 +37,7 @@ blocker blocks sign-off.
 
 Each senior writes `swarm/votes/<role>-signoff.md`:
 
-```
+```text
 decision: SHIP | REJECT
 reason: <one paragraph>
 evidence: <tests run + result>

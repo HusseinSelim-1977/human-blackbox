@@ -11,7 +11,7 @@ senior specialists working in parallel under a shared contract.
 
 ## Pipeline
 
-```
+```text
  mic ──► AudioDetector (YAMNet)  ─┐
  IMU ──► MotionDetector (LSTM)   ─┼──► FusionStrategy ──► EMERGENCY?
  cam ──► VisionDetector (YOLOv8n)─┘         │                  │
@@ -23,13 +23,15 @@ senior specialists working in parallel under a shared contract.
                                      EvidenceStore ◄───────────┘
 ```
 
-Full diagram and failure modes: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Full diagram and failure modes:
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
 ## Safety guarantees
 
 These are enforced in code and covered by tests, not just documented:
 
-1. **Visible recording indicator** — `UserConsentManager.recording_indicator_visible`
+1. **Visible recording indicator** —
+   `UserConsentManager.recording_indicator_visible`
    is true whenever any sensor is capturing.
 2. **Explicit, revocable consent** — capture refuses to start without a
    per-sensor grant; `revoke_consent()` stops it.
@@ -44,7 +46,7 @@ These are enforced in code and covered by tests, not just documented:
 |--------|----------------|
 | `modules/audio_detector.py` | YAMNet audio scoring, heuristic fallback |
 | `modules/motion_detector.py` | LSTM motion scoring, freefall/impact |
-| `modules/vision_detector.py` | YOLOv8-nano vision scoring, heuristic fallback |
+| `modules/vision_detector.py` | YOLOv8-nano scoring, heuristic fallback |
 | `modules/fusion.py` | Confidence-gated weighted fusion |
 | `modules/rolling_buffer.py` | 60 s encrypted ring buffer |
 | `modules/alert_sender.py` | Consent-gated alert with cancellable countdown |
@@ -71,19 +73,19 @@ python swarm/barrier.py
 No TensorFlow, PyTorch or ultralytics install is required: each detector loads
 its model when present and otherwise uses a deterministic signal-processing
 fallback, recorded as `mode: heuristic` in `raw_features` and documented in
-[`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md).
+[`docs/ASSUMPTIONS.md`](./docs/ASSUMPTIONS.md).
 
 ## Configuration
 
 All thresholds, fusion weights, the 60 s buffer window, the 15 s countdown and
-the safety flags live in [`config/default.yaml`](config/default.yaml). No magic
-numbers in the modules.
+the safety flags live in [`config/default.yaml`](./config/default.yaml). No
+magic numbers in the modules.
 
 ## Swarm process
 
 Eight specialists, one territory each, governed by
-[`docs/CONTRACTS.md`](docs/CONTRACTS.md): solo stage → barrier (all eight
+[`docs/CONTRACTS.md`](./docs/CONTRACTS.md): solo stage → barrier (all eight
 `swarm/done/*.md` present, full suite green) → four roundtable rounds
 (judge, consolidate, jointly modify, re-judge) → sign-off (≥ 6/8 SHIP) →
-outside jury. Protocol: [`docs/ROUNDTABLE.md`](docs/ROUNDTABLE.md); live state:
-[`swarm/STATE.md`](swarm/STATE.md).
+outside jury. Protocol: [`docs/ROUNDTABLE.md`](./docs/ROUNDTABLE.md); live
+state: [`swarm/STATE.md`](./swarm/STATE.md).

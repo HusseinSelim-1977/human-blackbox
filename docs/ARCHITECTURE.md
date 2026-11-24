@@ -16,7 +16,7 @@ tested deterministically with stubs.
 
 ## Flow
 
-```
+```text
  microphone ──> AudioDetector ──┐
  IMU        ──> MotionDetector ─┼──> FusionStrategy ──> ModalityScore
  camera     ──> VisionDetector ─┘          │
@@ -41,12 +41,20 @@ by default.
 
 ## Safety gates (non-negotiable)
 
-| # | Gate | Enforcement in code | Config key |
-|---|------|---------------------|------------|
-| 1 | Visible recording indicator whenever recording | `UserConsentManager.start_recording()` turns it on; `EmergencyPipeline.safety_audit()` reports it | `safety.recording_indicator` |
-| 2 | Explicit, revocable mic/camera consent before recording | `start_capture()` delegates to `start_recording()`, which refuses without consent | `safety.require_mic_consent`, `safety.require_camera_consent` |
-| 3 | User-cancellable 15 s countdown before any alert | `AlertSender.send()` runs the countdown; `cancel_user_countdown()` aborts it | `alert.countdown_sec` |
-| 4 | Raw media stays on-device unless explicit opt-in | Alert payload carries hashes/metadata only; sharing is opt-in | `safety.raw_media_on_device`, `safety.share_evidence_default` |
+1. **Visible recording indicator whenever recording.**
+   `UserConsentManager.start_recording()` turns it on;
+   `EmergencyPipeline.safety_audit()` reports it.
+   Config: `safety.recording_indicator`.
+2. **Explicit, revocable mic/camera consent before recording.**
+   `start_capture()` delegates to `start_recording()`, which refuses without
+   consent. Config: `safety.require_mic_consent`,
+   `safety.require_camera_consent`.
+3. **User-cancellable 15 s countdown before any alert.**
+   `AlertSender.send()` runs the countdown; `cancel_user_countdown()` aborts
+   it. Config: `alert.countdown_sec`.
+4. **Raw media stays on-device unless explicit opt-in.**
+   Alert payload carries hashes/metadata only; sharing is opt-in.
+   Config: `safety.raw_media_on_device`, `safety.share_evidence_default`.
 
 `safety_audit()` returns a boolean per gate (`recording_indicator`,
 `mic_consent`, `camera_consent`, `countdown_cancellable`,
@@ -78,17 +86,25 @@ runtime.
 
 ## Failure modes
 
-| Failure | Behaviour |
-|---------|-----------|
-| Detector raises or model missing | The exception propagates; the round produces no decision. Detection must be fixed rather than silently degraded. |
-| Detector unavailable for a round | Its chunk is `None`, so it is skipped; fusion uses the remaining modalities. With fewer than two modalities, fusion returns `NORMAL`/`INDETERMINATE` per its contract. |
-| No sensor input at all | Pipeline returns `INDETERMINATE` without calling fusion or the alert sender. |
-| Fusion unavailable | Exception propagates; no alert is sent, because no decision was made. |
-| Alert send returns `False` | Treated as user cancellation: no retry storm, decision is still returned and logged. |
-| Consent missing | `start_capture()` returns `False` and the indicator stays off; `safety_audit()` reports the failing gate. |
-| Countdown cancelled | `AlertSender.send()` returns `False`; no payload leaves the device. |
-| Buffer write failure | `process()` surfaces the error; evidence integrity is not silently ignored. |
-| Device offline | Detection, buffering and countdown are fully local; only transmission is deferred/retried per `alert.max_retries`. |
+- **Detector raises or model missing.** The exception propagates; the round
+  produces no decision. Detection must be fixed rather than silently degraded.
+- **Detector unavailable for a round.** Its chunk is `None`, so it is skipped;
+  fusion uses the remaining modalities. With fewer than two modalities,
+  fusion returns `NORMAL`/`INDETERMINATE` per its contract.
+- **No sensor input at all.** Pipeline returns `INDETERMINATE` without calling
+  fusion or the alert sender.
+- **Fusion unavailable.** Exception propagates; no alert is sent, because no
+  decision was made.
+- **Alert send returns `False`.** Treated as user cancellation: no retry
+  storm, decision is still returned and logged.
+- **Consent missing.** `start_capture()` returns `False` and the indicator
+  stays off; `safety_audit()` reports the failing gate.
+- **Countdown cancelled.** `AlertSender.send()` returns `False`; no payload
+  leaves the device.
+- **Buffer write failure.** `process()` surfaces the error; evidence integrity
+  is not silently ignored.
+- **Device offline.** Detection, buffering and countdown are fully local; only
+  transmission is deferred/retried per `alert.max_retries`.
 
 ## Module boundaries
 
@@ -96,3 +112,21 @@ runtime.
 - `modules/pipeline.py` — this integration layer (owned by integration-safety).
 - Detectors, fusion, buffer, alerting and consent live in their own modules and
   are injected; the pipeline imports only `modules.types` at module level.
+
+## Future work
+
+This document describes the shipped architecture. The planned enhancements are
+specified separately and are not implemented here:
+
+- `ROADMAP.md` — index, dependency graph, sequencing and evaluation protocol.
+- `TIER1-CONFORMAL-FUSION.md` — conformal-calibrated, cost-sensitive fusion
+  (replaces the fixed `0.65` threshold when enabled).
+- `TIER2-TEMPORAL-EVENT-FUSION.md` — gated-CNN temporal models and event-level
+  fusion (replaces per-instant scoring).
+- `TIER3-PERSONALIZATION.md` — on-device adaptive head, prototype replay and
+  opt-in federated learning.
+- `TIER4-DEPLOYMENT-PRIVACY.md` — real AES-256-GCM provider, key store,
+  thermal/mmWave alternatives to RGB, and resource budgets.
+
+Every item is designed to ship behind an `enabled: false` flag so the current
+behaviour in this document remains byte-identical.
