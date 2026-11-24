@@ -128,139 +128,87 @@ class FusionStrategy:
 
         if ambient_features and ambient_mean and ambient_std:
             # Compute Z-score normalization for each modality's raw features
+            # We compute a composite Z-score per modality, then apply boost once
             for modality in selected:
                 if modality not in ambient_features:
                     continue
                 mod_features = ambient_features[modality]
                 mod_mean = ambient_mean.get(modality, {})
                 mod_std = ambient_std.get(modality, {})
+                z_sum = 0.0
+                feat_count = 0
                 for feat in mod_features:
                     if feat in mod_mean and feat in mod_std:
                         mean_val = mod_mean[feat]
                         std_val = mod_std[feat]
                         raw_val = selected[modality][0].raw_features.get(feat, mean_val)
                         # Z-score: how many standard deviations from the ambient mean?
-                        z = (raw_val - mean_val) / std_val if std_val > 0 else 0.0
-                        # Boost effective score by 10-20% when Z-score is strong
-                        boost = 1.0 + 0.15 * abs(z)
-                        selected[modality] = (selected[modality][0], effective * boost)
-# Only relevant when we have both motion and audio in the selection
-temporal_coherence = 0.0
-if "MOTION" in selected and "AUDIO" in selected:
-    motion_start = event_starts.get("MOTION", latest_timestamp)
-    audio_end = event_ends.get("AUDIO", latest_timestamp)
-    motion_end = event_ends.get("MOTION", latest_timestamp)
-    audio_start = event_starts.get("AUDIO", latest_timestamp)
-    # Temporal window: how much time spans between motion start and audio end?
-temporal_span = max(audio_end, motion_end) - min(motion_start, audio_start)
-		# Normalize to [0, 1] using the configured temporal window
-	    normalized_span = _clamp01(temporal_span / temporal_window, 0.0)
-	    # Temporal precedence: did motion lead audio? (positive if motion_start < audio_end)
-	    motion_leads_audio = (motion_start < audio_end)
-	    precedence_signal = 1.0 if motion_leads_audio else 0.0
-	    # Temporal coherence score: blend normalized span with precedence signal
-	    temporal_coherence = 0.5 * normalized_span + 0.5 * precedence_signal
+                        z = (raw_val - mean_val["mean"]) / std_val["std"] if std_val["std"] > 0 else 0.0
+                        # Accumulate Z-scores across features
+                        z_sum += abs(z)
+                        feat_count += 1
 
-        if not selected:
-            # ASSUMPTION: input that contains no usable known modality is
-            # treated like empty input and reported as INDETERMINATE.
-            return self._result(
-                0.0, 0.0, INDETERMINATE, latest_timestamp, threshold,
-                {}, {}, 0, 0.0, event_starts, event_ends)
+        # Apply Z-score boost: amplify the modality with strongest deviation from ambient
+        z_score_boost = cfg.get("z_score_boost", 1.0)
+        if z_sum > 0 and feat_count > 0:
+            avg_z = z_sum / feat_count
+            # Apply boost to the modality with strongest Z-score deviation
+            for modality in selected:
+                if modality in ambient_features and avg_z > 0:
+                    z = (selected[modality][0].raw_features.get("brightness", 0) -
+                         ambient_mean["VISION"]["brightness"]["mean"]) / ambient_std["VISION"]["brightness"]["std"]
+                    if z > 0:
+                        selected[modality] = (selected[modality][0], selected[modality][1] * z_score_boost)
 
-        total_weight = sum(weights[modality] for modality in selected)
-        if total_weight <= 0.0:
-            # ASSUMPTION: all-zero configured weights fall back to equal
-            # weights across the modalities that are present.
-            weights_used = {
-                modality: 1.0 / len(selected) for modality in selected}
-        else:
-            weights_used = {
-                modality: weights[modality] / total_weight
-                for modality in selected}
+        # Compute weighted average across selected modalities
+        weighted_score = 0.0
+        weight_sum = 0.0
+        for modality, (item, effective) in selected.items():
+            mod_weight = weights.get(modality, 1.0)
+            weighted_score += mod_weight * effective
+            weight_sum += mod_weight
 
-        # Round to 12 places so an exact threshold boundary is not lost to
-        # floating-point summation error before the >= comparison.
-        weighted_score = round(math.fsum(
-            weights_used[modality] * effective
-            for modality, (_, effective) in selected.items()), 12)
-        confidence = round(math.fsum(
-            weights_used[modality] * _clamp01(item.confidence)
-            for modality, (item, _) in selected.items()), 12)
+        if weight_sum > 0:
+            weighted_score /= weight_sum
 
-        if require_two and len(selected) < 2:
+        # Apply ambient adjustment if configured
+        if ambient_adjustment != 1.0:
+            weighted_score = weighted_score * ambient_adjustment
+
+        # Determine the final decision based on threshold and confidence
+        decision = INDETERMINATE
+        if weighted_score >= threshold:
+            decision = EMERGENCY
+        elif weighted_score < threshold:
             decision = NORMAL
-        else:
-            decision = EMERGENCY if weighted_score >= threshold else NORMAL
 
-        agreement = sum(
-            1 for item, _ in selected.values() if item.decision == decision
-        ) / len(selected)
-
-        per_modality = {
-            modality: {
-                "score": _clamp01(item.score),
-                "confidence": _clamp01(item.confidence),
-                "decision": item.decision,
-                "effective_score": effective,
-                "weight": weights_used[modality],
-            }
-            for modality, (item, effective) in selected.items()
+        # Build the result object
+        result_dict = {
+            "score": weighted_score,
+            "confidence": weighted_score,  # Use score as proxy for confidence
+            "timestamp": latest_timestamp,
+            "modality_type": FUSION,
+            "raw_features": {},  # Could aggregate raw features from selected modalities
+            "decision": decision,
+            "modalities": list(selected.keys()),
+            "weights": weights,
+            "threshold": threshold,
+            "min_confidence": min_confidence,
+            "ambient_features": ambient_features,
+            "ambient_mean": ambient_mean,
+            "ambient_std": ambient_std,
+            "z_sum": z_sum,
+            "z_score_boost": z_score_boost,
         }
-
-        return self._result(
-            _clamp01(weighted_score), _clamp01(confidence), decision,
-            latest_timestamp, threshold, per_modality, weights_used,
-            len(selected), agreement, event_starts, event_ends,
-            temporal_coherence, ambient_features, ambient_mean, ambient_std)
-
-    @staticmethod
-    def _result(score: float, confidence: float, decision: str,
-                timestamp: float, threshold: float, per_modality: dict,
-                weights_used: dict, modalities_count: int,
-                agreement: float = 0.0,
-                event_starts: Dict[str, float] = None,
-                event_ends: Dict[str, float] = None,
-                temporal_coherence: float = 0.0,
-                ambient_features: dict = None,
-                ambient_mean: dict = None,
-                ambient_std: dict = None) -> ModalityScore:
-        # Normalize event duration values to [0, 1] range for raw_features
-        # Compute event duration as the span from first to last timestamp
-        if event_starts and event_ends and len(event_starts) > 0:
-            duration_span = max(event_ends.values()) - min(event_starts.values())
-            # Use the first modality's timestamp as reference (handles any modality)
-            first_modality = next(iter(event_starts.keys()), "MOTION")
-            event_start_norm = _clamp01(event_starts[first_modality], 0.0)
-            event_end_norm = _clamp01(event_ends[first_modality], 1.0)
-        else:
-            event_start_norm = _clamp01(event_starts, 0.0) if event_starts else 0.0
-            event_end_norm = _clamp01(event_ends, 0.0) if event_ends else 0.0
-        # Only include temporal_coherence in raw_features when it has a meaningful value
-        temporal_coherence_feature = _clamp01(temporal_coherence, 0.0)
-        # Build ambient baseline context: include mean and std for each tracked feature
-        ambient_context = {}
-        if ambient_features and ambient_mean and ambient_std:
-            ambient_context["ambient_features"] = ambient_features
-            ambient_context["ambient_mean"] = ambient_mean
-            ambient_context["ambient_std"] = ambient_std
-        return ModalityScore(
-            score=score,
-            confidence=confidence,
-            decision=decision,
-            timestamp=timestamp,
+        result = ModalityScore(
+            score=weighted_score,
+            confidence=weighted_score,
+            timestamp=latest_timestamp,
             modality_type=FUSION,
-            raw_features={
-                "per_modality": per_modality,
-                "weights_used": weights_used,
-                "weighted_score": score,
-                "threshold": threshold,
-                "modalities_count": modalities_count,
-                "agreement": agreement,
-                "event_start": event_start_norm,
-                "event_end": event_end_norm,
-                "duration_span": duration_span if event_starts and event_ends else 0.0,
-                "temporal_coherence": temporal_coherence_feature,
-                **ambient_context,
-            },
+            raw_features={},
+            decision=decision,
         )
+        # Attach metadata as dict attributes
+        result.metadata = result_dict
+        return result
+
