@@ -114,3 +114,16 @@ Scope: the shipped baseline at **159 tests passing**, 8/8 SHIP. The tiers in
 - **Risk:** No load/latency/RSS budget test against the 100 ms inference target.
 - **Verdict:** **GO for release of the verified baseline; conditional for
   production** pending hardware-in-the-loop and model-backed validation.
+
+## Synthesis
+
+The four lenses converge on one central tension: the repository is demonstrably ready for a thesis demo, but not for unsupervised field deployment. PM and QA both require hardware-in-the-loop and model-backed validation before production use; Developer repeats the same gap; Architect accepts the shipped runtime but flags `fusion_enhanced.py` as unwired duplication. Because three or more lenses share the production-validation gap, unsupervised production deployment is a blocking issue while the thesis/demo baseline remains GO.
+
+Secondary tensions:
+
+- **Demo-readiness vs production hardening:** 159 deterministic tests and heuristic fallbacks keep CI fast, but real sensor noise, trained models, and long-running buffer/evidence behavior remain unvalidated.
+- **Runtime clarity vs architectural duplication:** `fusion.py` is the shipped path while `fusion_enhanced.py` is unwired, risking maintainer confusion.
+- **Privacy intent vs crypto stand-in:** evidence encryption is documented and tested, but it is not production AEAD.
+- **CI confidence vs operational confidence:** consent, indicator, and countdown cancellation are asserted, but load/latency/RSS against the 100 ms inference target are not.
+
+Resolution: **GO** for the documented thesis/demo baseline; **NO-GO for unsupervised production** until model-backed detection, hardware-in-the-loop testing, and performance budgets are validated.
