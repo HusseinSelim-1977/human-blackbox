@@ -1,10 +1,10 @@
 """Human BlackBox edge AI modules.
 
-Shared contract types live in modules.types and are read-only.
+Shared contract types live in modules.modality_types and are read-only.
 Each implementation module is owned by one senior specialist.
 """
 
-from modules.types import (
+from modules.modality_types import (
     AudioChunk,
     Frame,
     ImuSample,

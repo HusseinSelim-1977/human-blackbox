@@ -316,10 +316,16 @@ class FusionStrategy:
             config: Fusion configuration
             
         Returns:
-            ModalityScore with final score, confidence, and decision ("EMERGENCY" or "NORMAL")
+            ModalityScore with final score, confidence, and decision ("EMERGENCY", "NORMAL" or "INDETERMINATE")
         """
         pass
 ```
+
+`FusionStrategy.decide` returns a `ModalityScore` whose `raw_features` contains
+`per_modality`, `weights_used`, `weighted_score`, `threshold`,
+`modalities_count`, `agreement`, `event_start`, `event_end`, `duration_span`
+and `temporal_coherence`, plus `ambient_boosts` when the optional ambient
+Z-score boost is active.
 
 ## AlertSender.send
 Alert sender that sends emergency alert after user-cancellable countdown.
@@ -419,7 +425,8 @@ class EvidenceStore:
 # Section 4: Territory Map
 
 Each senior specialist owns exactly the files below. No specialist may edit another
-specialist's files. `modules/types.py`, `modules/__init__.py`, `config/`,
+specialist's files. `modules/modality_types.py` (canonical) and its
+backwards-compatible shim `modules/types.py`, `modules/__init__.py`, `config/`,
 `docs/CONTRACTS.md`, `docs/ASSUMPTIONS.md` and `README.md` are coordinator-owned
 and read-only during the solo stage.
 
@@ -521,6 +528,3 @@ All implementations must include:
 - `audio_data` is a list of floats representing amplitude values.
 - `image_data` is a list of integers representing pixel values (RGB format).
 - `accelerometer`, `gyroscope`, `magnetometer` are lists of 3 floats each.
-
-</function>
-</tool_call>

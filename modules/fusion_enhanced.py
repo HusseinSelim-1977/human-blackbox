@@ -1,4 +1,10 @@
-"""Enhanced fusion strategies for Human BlackBox.
+"""Experimental enhanced fusion strategies for Human BlackBox.
+
+Status: **experimental extension**, not wired into
+:class:`modules.pipeline.EmergencyPipeline` by default. The canonical fusion
+implementation is :class:`modules.fusion.FusionStrategy`; this module keeps
+alternative adaptive/dominant/gated modes available for experiments without
+changing the shipped pipeline.
 
 Moves beyond simple weighted averaging to implement:
 1. Adaptive weights based on confidence
@@ -238,7 +244,7 @@ class ConfidenceAdaptiveFusion:
                 "effective_score": _compute_confidence_weighted_score(
                     [s], {modality: weights[modality]}, min_conf,
                 )[0],
-                "weight": weights[modality],
+                "weight": weights.get(modality, 0.0),
             }
             for s, modality in zip(modality_scores, [s.modality_type for s in modality_scores])
         }
@@ -354,7 +360,7 @@ class DominantModalityFusion:
                 "score": _clamp01(s.score),
                 "confidence": _clamp01(s.confidence),
                 "decision": s.decision,
-                "weight": weights[modality],
+                "weight": weights.get(modality, 0.0),
             }
             for s, modality in zip(modality_scores, [s.modality_type for s in modality_scores])
         }
@@ -456,12 +462,13 @@ class ConfidenceGatedFusion:
             mode = "high_confidence"
         elif avg_conf <= low_conf:
             # LOW_CONFIDENCE: Require multiple modalities or use entropy
+            weighted_score, confidence = _compute_confidence_weighted_score(
+                modality_scores, weights, low_conf,
+            )
             if self.require_two and len(modality_scores) < 2:
                 decision = NORMAL  # Fallback to weighted
+                mode = "low_confidence_gated"
             else:
-                weighted_score, confidence = _compute_confidence_weighted_score(
-                    modality_scores, weights, low_conf,
-                )
                 decision = EMERGENCY if weighted_score >= threshold else NORMAL
                 mode = "low_confidence"
         else:
@@ -481,7 +488,7 @@ class ConfidenceGatedFusion:
                 "score": _clamp01(s.score),
                 "confidence": _clamp01(s.confidence),
                 "decision": s.decision,
-                "weight": weights[modality],
+                "weight": weights.get(modality, 0.0),
             }
             for s, modality in zip(modality_scores, [s.modality_type for s in modality_scores])
         }
@@ -550,9 +557,10 @@ class FusionStrategy:
         self.mode = mode
         self.config = config if isinstance(config, dict) else {}
         
-        self._adaptive = ConfidenceAdaptiveFusion(weights=config)
-        self._dominant = DominantModalityFusion(weights=config)
-        self._gated = ConfidenceGatedFusion(weights=config)
+        fusion_weights = _fusion_section(self.config)
+        self._adaptive = ConfidenceAdaptiveFusion(weights=fusion_weights)
+        self._dominant = DominantModalityFusion(weights=fusion_weights)
+        self._gated = ConfidenceGatedFusion(weights=fusion_weights)
     
     def decide(
         self,
@@ -583,6 +591,7 @@ class FusionStrategy:
         config: Dict,
     ) -> ModalityScore:
         """Classic weighted average with optional threshold."""
+        config = _fusion_section(config)
         weights = _normalize_weights(
             {
                 m: _positive_float(
@@ -623,7 +632,7 @@ class FusionStrategy:
                 "score": _clamp01(s.score),
                 "confidence": _clamp01(s.confidence),
                 "decision": s.decision,
-                "weight": weights[modality],
+                "weight": weights.get(modality, 0.0),
             }
             for s, modality in zip(modality_scores, [s.modality_type for s in modality_scores])
         }

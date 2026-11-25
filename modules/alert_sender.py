@@ -56,6 +56,7 @@ class AlertSender:
         self.notifier = notifier if notifier is not None else self._default_notifier
         self._lock = threading.Lock()
         self._active_cancel: Optional[threading.Event] = None
+        self._sending = False
         self.last_payload: Optional[dict] = None
         self.sent_alerts: list[dict] = []
 
@@ -65,22 +66,32 @@ class AlertSender:
         """Default visible countdown (the real UI overrides this)."""
         print(f"[blackbox] sending emergency alert in {remaining}s - cancel now")
 
-    def cancel_user_countdown(self) -> None:
-        """Cancel the active send's countdown (safe to call from any thread)."""
+    def cancel_user_countdown(self, event: Optional[threading.Event] = None) -> None:
+        """Cancel the active send's countdown (safe to call from any thread).
+
+        A specific countdown's event may be supplied; otherwise the currently
+        active countdown (if any) is cancelled. Cancelling with no active send
+        is a safe no-op.
+        """
         with self._lock:
-            event = self._active_cancel
-        if event is not None:
-            event.set()
+            active = self._active_cancel
+        for target in (event, active):
+            if target is not None:
+                target.set()
 
     # -- internals -----------------------------------------------------------
     def _consent_ok(self) -> bool:
+        """Fail closed: only an explicit, working grant allows sending."""
         manager = self.user_consent_manager
         if manager is None:
-            return True
+            return False
         checker = getattr(manager, "has_consent", None)
         if not callable(checker):
-            return True
-        return bool(checker(_MICROPHONE))
+            return False
+        try:
+            return bool(checker(_MICROPHONE))
+        except Exception:
+            return False
 
     def _run_countdown(self, cancel_event: threading.Event) -> bool:
         """Tick down visibly; return False if cancelled before it finishes."""
@@ -149,7 +160,12 @@ class AlertSender:
 
     # -- public API ----------------------------------------------------------
     def send(self, decision, evidence_buffer, user_id: str) -> bool:
-        """Send an alert after the countdown; False if invalid or cancelled."""
+        """Send an alert after the countdown; False if invalid or cancelled.
+
+        Only one countdown runs at a time: a concurrent call returns ``False``
+        instead of queueing a duplicate alert. Consent is checked again after
+        the countdown so a mid-countdown revocation still blocks the send.
+        """
         if getattr(decision, "decision", None) != EMERGENCY:
             return False
         if not self._consent_ok():
@@ -157,18 +173,24 @@ class AlertSender:
 
         cancel_event = threading.Event()
         with self._lock:
+            if self._sending:
+                return False
+            self._sending = True
             self._active_cancel = cancel_event
         try:
             completed = self._run_countdown(cancel_event)
+            if completed and not self._consent_ok():
+                completed = False
+            if not completed:
+                return False
+
+            payload = self._build_payload(decision, evidence_buffer, user_id)
+            with self._lock:
+                self.last_payload = payload
+                self.sent_alerts.append(payload)
+            return True
         finally:
             with self._lock:
                 if self._active_cancel is cancel_event:
                     self._active_cancel = None
-
-        if not completed:
-            return False
-
-        payload = self._build_payload(decision, evidence_buffer, user_id)
-        self.last_payload = payload
-        self.sent_alerts.append(payload)
-        return True
+                self._sending = False

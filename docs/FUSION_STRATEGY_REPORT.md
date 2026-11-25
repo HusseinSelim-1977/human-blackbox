@@ -1,21 +1,29 @@
 # Fusion Strategy Optimization Report
 
-**Date:** Nov 24, 2026  
+**Date:** Nov 24, 2026 (final review: Nov 25, 2026)  
 **Focus:** Validating temporal coherence and event duration capture in `fusion.py`
 
 ---
 
 ## Executive Summary
 
-Evaluating two fusion strategies:
-- **`fusion.py`** (clean weighted): Built-in temporal coherence, event duration tracking
-- **`fusion_enhanced.py`** (adaptive): Multiple fusion modes, dominant modality detection
+The shipped fusion engine is **`modules/fusion.py`** (`FusionStrategy`), wired
+into `modules/pipeline.py`. `modules/fusion_enhanced.py` remains an experimental
+alternative (multiple modes, dominant-modality selection) and is **not** used by
+the pipeline or the 159-test suite.
 
-**Validation Result:** `fusion.py` with config mode `"adaptive"` and tuned temporal parameters. The synthetic tests confirm:
-- **Temporal coherence:** `0.714` (strong motion→audio signal)
-- **Event duration span:** `0.150s` (0.35s window capturing 43% of motion's context)
+The shipped engine provides:
+- Confidence-gated weighted fusion with normalized weights
+- Built-in temporal coherence and event start/end span tracking
+- An optional ambient Z-score boost driven by runtime baseline statistics
 
-**Recommendation:** Keep `fusion.py` as the base; the temporal logic parameters are well-tuned for motion's 1.0s rolling window and audio's 0.975s window.
+The config values in `config/default.yaml` (`temporal_window: 0.35`,
+`temporal_precedence: 0.18`, `event_duration_window: 0.35`) have been applied and
+the suite is green. `event_duration_window` is currently declarative only:
+`fusion.py` derives `duration_span` directly from per-modality event timestamps.
+
+**Recommendation:** Keep `fusion.py` as the single shipped fusion path; treat
+`fusion_enhanced.py` as an unshipped experiment.
 
 ---
 
@@ -29,14 +37,17 @@ Evaluating two fusion strategies:
 | **Audio** | 0.975s (YAMNet input) | Chunk-based |
 | **Vision** | Frame-based | Discrete (60Hz) |
 
-**Observation:** Motion detector's 1.0s rolling window feeds context to fusion, but fusion's `temporal_window` is now 0.35s. This creates a deliberate "decision window" that captures 43% of motion's full context—enough to detect the motion→audio spike without over-blurring the signal.
+**Observation:** Motion detector's 1.0s rolling window feeds context to fusion, but fusion's `temporal_window` is 0.35s. This is a deliberate "decision window": modalities must fall within 0.35s of each other to score full temporal coherence, which avoids over-blurring the motion→audio sequence.
 
 ### 2. Event Duration Tracking
 
-**Current:** `event_duration_window: 0.35s`  
+**Current:** `event_duration_window: 0.35s` (declarative)  
 **Purpose:** Track first-to-last timestamp per modality during an event.
 
-**Validation:** The 0.35s window captures 30% of the motion→audio span (0.150s) and extends to 86% of audio's 0.975s window. This balances capturing full event spans while maintaining temporal precision.
+**Validation:** `fusion.py` reports `duration_span` as the first-to-last event
+timestamp across contributing modalities. The synthetic temporal tests exercise
+a motion→audio sequence and a long-duration case; they assert the reported span,
+not a hard-coded fraction of a window.
 
 ### 3. Detector-Specific Nuances
 
@@ -71,8 +82,15 @@ fusion:
 
 ```yaml
 fusion:
-  mode: "adaptive"             # Enables weighted fusion with temporal logic
+  mode: "adaptive"             # informational; fusion.py does not branch on mode
 ```
+
+### D. Ambient Z-Score Boost
+
+`fusion.py` supports an optional ambient boost. It is a no-op unless runtime
+`ambient_mean`/`ambient_std` tables are supplied; `config/default.yaml` only
+declares which features to track via `ambient_baselines.per_modality`.
+Applied factors are reported in `raw_features["ambient_boosts"]`.
 
 ---
 
@@ -80,12 +98,12 @@ fusion:
 
 ### If Using `fusion.py` (Current Path)
 
-The core weighted fusion already implements:
-- **Temporal coherence:** Motion precedes audio within `temporal_window`
-- **Event duration:** First-to-last timestamp tracking per modality
-- **Temporal precedence:** Weighted boost when motion leads audio
+The core weighted fusion implements:
+- **Temporal coherence:** `1.0` when all modalities fall inside `temporal_window`, `0.5` when they do not
+- **Event duration:** First-to-last timestamp tracking per modality (`event_start`, `event_end`, `duration_span`)
+- **Temporal precedence:** `temporal_coherence` drops to `0.5` when audio clearly leads motion, contradicting the expected impact-then-scream ordering
 
-### If Using `fusion_enhanced.py` (Alternative)
+### If Using `fusion_enhanced.py` (Experimental, Not Wired)
 
 Offers:
 - **Multiple fusion modes:** `["simple", "adaptive", "dominant", "gated"]`
@@ -120,41 +138,40 @@ window_sec = 0.975  # YAMNet input window; matches current config
 
 ## Verification Plan (Completed)
 
-1. **Build:** Run type check and lint to confirm config harmony ✓
-2. **Synthetic Test:** Validate temporal coherence with motion→audio spike sequence ✓
-   - `temporal_coherence: 0.714` confirms strong temporal signal
-   - `duration_span: 0.150s` captures 43% of motion's 1.0s context
-3. **Edge Case:** Long duration capture at 0.30s (86% of 0.35s window) ✓
-4. **Live Validation:** Run end-to-end inference with real sensor data
+1. **Config:** Weights and temporal parameters in `config/default.yaml` match the shipped `fusion.py` defaults. ✓
+2. **Synthetic Test:** Temporal tests in `tests/test_fusion_temporal.py` cover motion→audio ordering, audio-only, and long-duration spans. ✓
+3. **Regression:** `python3 -m pytest tests/ -q` → 159 passed. ✓
+4. **Live Validation:** Not performed; detectors run in heuristic mode unless models are present. This remains a deployment-time check.
 
 ---
 
-## Decision Matrix
+## Decision (Final)
 
-| Criteria | `fusion.py` | `fusion_enhanced.py` |
-|----------|-------------|----------------------|
+| Criteria | `fusion.py` (shipped) | `fusion_enhanced.py` (experimental) |
+|----------|----------------------|-------------------------------------|
 | **Simplicity** | ✓ Clean, weighted | Multiple modes |
 | **Temporal Logic** | Built-in | Config-driven |
 | **Dominant Modality** | Implicit | Explicit detection |
-| **Config Flexibility** | Via `mode` field | Via `mode` + weights |
-| **Best For** | Balanced, predictable | Adaptive, dynamic |
+| **Config Flexibility** | Weights + gate | Via `mode` + weights |
+| **Wired into pipeline** | ✓ Yes | ✗ No |
+| **Best For** | Balanced, predictable | Research experiments |
 
 ---
 
 ## Next Steps
 
-1. **Apply config tweaks** (A & B above) to `config/default.yaml`
-2. **Run a synthetic test** with motion→audio spike sequence
-3. **Observe event duration** capture in `fusion.py`'s raw features
-4. **Decide on base fusion** (`fusion.py` vs `fusion_enhanced.py`) based on preference
+No further fusion work is required for the shipped baseline. Optional future
+work: add dedicated unit tests for the ambient Z-score boost inside `tests/`
+(currently exercised only by root-level scratch scripts) and decide whether to
+retire `fusion_enhanced.py`.
 
 ---
 
 ## Relevant Files
 
 - `/config/default.yaml`: System-level weights and temporal settings
-- `/modules/fusion.py`: Core weighted fusion with temporal logic
-- `/modules/fusion_enhanced.py`: Enhanced strategies with adaptive weights
+- `/modules/fusion.py`: Shipped weighted fusion with temporal logic and ambient boost
+- `/modules/fusion_enhanced.py`: Experimental strategies, not wired into the pipeline
 - `/modules/motion_detector.py`: Rolling deque context (maxlen=16)
 - `/modules/audio_detector.py`: 0.975s window with spectral features
 - `/modules/vision_detector.py`: Frame-based pixel statistics

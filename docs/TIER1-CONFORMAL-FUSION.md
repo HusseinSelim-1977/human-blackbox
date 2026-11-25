@@ -1,6 +1,6 @@
 # Tier 1 Design — Conformal-Calibrated, Cost-Sensitive Fusion
 
-Status: design proposal (not yet implemented)
+Status: future design proposal — not implemented in the shipped 159-test baseline.
 Target modules: `modules/calibration.py` (new), `modules/fusion.py`
 (extend), `modules/pipeline.py` (wire), `config/default.yaml` (extend),
 `tests/test_calibration.py` (new)

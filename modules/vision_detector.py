@@ -4,12 +4,13 @@ Scores Frames into ModalityScore (docs/CONTRACTS.md); YOLOv8-nano when the
 model file exists, else a deterministic numpy pixel-statistics heuristic.
 """
 
+import math
 import os
 from typing import Any, Dict
 
 import numpy as np
 
-from modules.types import (
+from modules.modality_types import (
     EMERGENCY,
     INDETERMINATE,
     NORMAL,

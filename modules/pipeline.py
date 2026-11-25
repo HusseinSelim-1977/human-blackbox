@@ -3,6 +3,10 @@
 Wires the three modality detectors, the fusion strategy, the rolling
 evidence buffer and the alert sender into a single safety-gated flow.
 
+The canonical fusion implementation is :class:`modules.fusion.FusionStrategy`;
+it is injected by the caller. ``modules.fusion_enhanced`` is an experimental
+extension and is *not* wired in by default.
+
 Only :mod:`modules.types` is imported at module level so that the pipeline
 can be unit-tested with stubs and never pulls in optional model runtimes.
 """
@@ -116,7 +120,7 @@ class EmergencyPipeline:
             scores.append(score)
 
         if scores:
-            fused = self.fusion.decide(scores, self.config)
+            fused = self.fusion.decide(scores, self._fusion_config())
         else:
             # # ASSUMPTION: an empty round has no evidence, so fusion is
             # not invoked and the pipeline reports INDETERMINATE.
@@ -203,6 +207,52 @@ class EmergencyPipeline:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _fusion_config(self) -> Any:
+        """Return the config for fusion, enriched with live ambient stats.
+
+        ``RollingBuffer.get_ambient_stats()`` reports
+        ``{lowercase_modality: {feature: {"mean", "std", "count"}}}`` while
+        fusion expects ``ambient_mean``/``ambient_std`` tables plus a
+        per-modality ``ambient_features`` list. Bridge the two shapes here so
+        buffer internals do not leak into fusion.
+        """
+        config = self.config
+        if not isinstance(config, Mapping) or not self._ambient_enabled(config):
+            return config
+        stats = self._ambient_stats()
+        if not stats:
+            return config
+        merged = dict(config)
+        merged["ambient_mean"] = stats
+        merged["ambient_std"] = stats
+        merged.setdefault(
+            "ambient_features",
+            {
+                str(modality).upper(): sorted(features)
+                for modality, features in stats.items()
+                if isinstance(features, Mapping) and features
+            },
+        )
+        return merged
+
+    def _ambient_stats(self) -> Dict[str, Any]:
+        """Read ambient stats from the buffer, tolerating partial state."""
+        getter = getattr(self.buffer, "get_ambient_stats", None)
+        if getter is None:
+            return {}
+        try:
+            stats = getter()
+        except Exception:  # noqa: BLE001 - partial buffers may lack samples
+            return {}
+        return stats if isinstance(stats, dict) else {}
+
+    @staticmethod
+    def _ambient_enabled(config: Mapping) -> bool:
+        baselines = config.get("ambient_baselines")
+        if isinstance(baselines, Mapping):
+            return bool(baselines.get("enabled", True))
+        return True
+
     def _has_consent(self, sensor: str) -> bool:
         if self.consent_manager is None:
             return False

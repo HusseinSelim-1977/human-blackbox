@@ -19,6 +19,15 @@ class ConsentRequiredError(RuntimeError):
     """Raised when a recording is attempted without explicit consent."""
 
 
+def _check_sensor(sensor: str) -> str:
+    """Reject malformed sensor names on state-changing calls."""
+    if not isinstance(sensor, str):
+        raise TypeError("sensor must be a string")
+    if not sensor.strip():
+        raise ValueError("sensor must not be empty")
+    return sensor
+
+
 class UserConsentManager:
     """Tracks per-sensor consent and which sensors are actively recording.
 
@@ -34,18 +43,22 @@ class UserConsentManager:
 
     def request_consent(self, sensor: str) -> bool:
         """Record an explicit consent grant for ``sensor`` (returns True)."""
+        sensor = _check_sensor(sensor)
         with self._lock:
             self._consent[sensor] = True
         return True
 
     def revoke_consent(self, sensor: str) -> None:
         """Revoke consent and stop recording for ``sensor`` immediately."""
+        sensor = _check_sensor(sensor)
         with self._lock:
             self._consent[sensor] = False
             self._recording.discard(sensor)
 
     def has_consent(self, sensor: str) -> bool:
         """Return True only if ``sensor`` currently has an active grant."""
+        if not isinstance(sensor, str) or not sensor:
+            return False  # fail closed on malformed queries
         with self._lock:
             return bool(self._consent.get(sensor, False))
 
@@ -54,6 +67,7 @@ class UserConsentManager:
 
         Turning capture on also turns the visible recording indicator on.
         """
+        sensor = _check_sensor(sensor)
         with self._lock:
             if not self._consent.get(sensor, False):
                 return False
@@ -62,6 +76,7 @@ class UserConsentManager:
 
     def stop_recording(self, sensor: str) -> None:
         """Stop capture for ``sensor``; indicator clears when none remain."""
+        sensor = _check_sensor(sensor)
         with self._lock:
             self._recording.discard(sensor)
 

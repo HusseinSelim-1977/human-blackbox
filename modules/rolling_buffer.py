@@ -81,6 +81,10 @@ class RollingBuffer:
             raise ValueError("buffer_size_sec must be positive")
         if not isinstance(encryption_key, str) or not encryption_key:
             raise ValueError("encryption_key must be a non-empty string")
+        if isinstance(ambient_window_sec, bool) or not isinstance(ambient_window_sec, int):
+            raise TypeError("ambient_window_sec must be an int")
+        if ambient_window_sec < 1:
+            raise ValueError("ambient_window_sec must be at least 1")
         self.buffer_size_sec = buffer_size_sec
         self._key = encryption_key.encode("utf-8")
         self.storage_path = storage_path
@@ -89,15 +93,27 @@ class RollingBuffer:
 
         # Ambient baseline state: {"audio": {"energy": [v1, v2, ...]}, ...}
         self._ambient_window = ambient_window_sec
-        self._ambient_features = ambient_features or {
+        # Accept either the canonical lowercase keys or the config file's
+        # uppercase modality keys (``ambient_baselines.per_modality``).
+        defaults: Dict[str, List[str]] = {
             "audio": ["energy", "spectral_centroid", "spectral_rolloff"],
             "motion": ["accel_magnitude", "gyro_magnitude", "temp"],
             "vision": ["brightness", "edge_density", "red_dominance"],
         }
+        supplied: Dict[str, List[str]] = {}
+        for key, feats in (ambient_features or {}).items():
+            if not isinstance(key, str) or not isinstance(feats, (list, tuple)):
+                continue
+            cleaned = [str(feat) for feat in feats]
+            if cleaned:
+                supplied[key.strip().lower()] = cleaned
+        self._ambient_features: Dict[str, List[str]] = {
+            modality: supplied.get(modality, defaults[modality])
+            for modality in ("audio", "motion", "vision")
+        }
         self._ambient_state: _AmbientState = {
-            "audio": {feat: [] for feat in self._ambient_features["audio"]},
-            "motion": {feat: [] for feat in self._ambient_features["motion"]},
-            "vision": {feat: [] for feat in self._ambient_features["vision"]},
+            modality: {feat: [] for feat in feats}
+            for modality, feats in self._ambient_features.items()
         }
 
     # ------------------------------------------------------------------
@@ -136,14 +152,14 @@ class RollingBuffer:
         """
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
             raise TypeError("seconds must be a number")
+        if float(seconds) < 0:
+            raise ValueError("seconds must be non-negative")
         with self._lock:
             snapshot = list(self._entries)
         buckets: Dict[str, list] = {"audio": [], "motion": [], "vision": []}
         if not snapshot:
             return buckets
         window = min(float(seconds), float(self.buffer_size_sec))
-        if window < 0:
-            raise ValueError("seconds must be non-negative")
         cutoff = max(ts for ts, _, _ in snapshot) - window
         for ts, chunk, score in sorted(snapshot, key=lambda e: e[0]):
             if ts >= cutoff:
@@ -243,7 +259,13 @@ class RollingBuffer:
         for feat in self._ambient_features[modality_key]:
             if feat not in features:
                 continue
-            val = float(features[feat])
+            try:
+                val = float(features[feat])
+            except (TypeError, ValueError):
+                # Non-numeric ambient values must never break capture.
+                continue
+            if val != val or val in (float("inf"), float("-inf")):
+                continue  # skip NaN/inf so mean/std stay finite
             self._ambient_state[modality_key][feat].append(val)
             # Trim to window size
             self._ambient_state[modality_key][feat] = self._ambient_state[
@@ -253,17 +275,25 @@ class RollingBuffer:
     def get_ambient_stats(self) -> Dict[str, Dict[str, Any]]:
         """Return current ambient baseline stats per modality.
 
-        Returns mean and std for each tracked feature, or None if
-        insufficient samples.
+        Maps lowercase modality -> feature -> ``{"mean", "std", "count"}``.
+        A feature with no samples reports ``mean=0.0, std=0.0, count=0`` and a
+        single sample reports ``std=0.0`` so downstream z-scoring stays stable.
         """
+        with self._lock:
+            snapshot = {
+                modality: {feat: list(vals) for feat, vals in feats.items()}
+                for modality, feats in self._ambient_state.items()
+            }
         stats = {}
-        for modality, features in self._ambient_state.items():
+        for modality, features in snapshot.items():
             if not features:
                 continue
             mod_stats = {}
             for feat in features:
                 vals = features[feat]
-                if len(vals) < 2:
+                if not vals:
+                    mod_stats[feat] = {"mean": 0.0, "std": 0.0, "count": 0}
+                elif len(vals) < 2:
                     mod_stats[feat] = {"mean": vals[0], "std": 0.0, "count": 1}
                 else:
                     mean = sum(vals) / len(vals)

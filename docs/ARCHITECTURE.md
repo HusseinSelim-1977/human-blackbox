@@ -68,8 +68,14 @@ runtime.
    `None`; each returns a `ModalityScore`.
 3. Each `(chunk, score)` pair is appended to the `RollingBuffer`.
 4. `FusionStrategy.decide()` combines all scores from this round using the
-   configured weights (AUDIO 0.35, MOTION 0.40, VISION 0.25), the fusion
-   threshold (0.65) and the two-modality requirement.
+   configured weights (AUDIO 0.40, MOTION 0.35, VISION 0.25), the fusion
+   threshold (0.55), the confidence gate (`min_confidence` 0.30) and the
+   two-modality requirement.
+   It also computes temporal coherence and event start/end spans. When runtime
+   `ambient_mean`/`ambient_std` statistics are supplied with
+   `ambient_baselines.per_modality` features, an ambient Z-score boost raises
+   scores that deviate from the rolling baseline and records the factors in
+   `raw_features["ambient_boosts"]`.
 5. The fused `ModalityScore` is stored in `last_decision` and returned.
 6. If the decision is `EMERGENCY`, `AlertSender.send()` is called exactly once
    for that round. A cancelled or failed send returns `False` but does not
@@ -108,15 +114,20 @@ runtime.
 
 ## Module boundaries
 
-- `modules/types.py` — shared types and constants (coordinator-owned).
+- `modules/modality_types.py` — canonical shared types and constants
+  (coordinator-owned, read-only).
+- `modules/types.py` — backwards-compatible re-export shim for
+  `modules.modality_types`; kept so older imports keep working.
 - `modules/pipeline.py` — this integration layer (owned by integration-safety).
 - Detectors, fusion, buffer, alerting and consent live in their own modules and
-  are injected; the pipeline imports only `modules.types` at module level.
+  are injected; the pipeline imports only the `modules.types` shim at module
+  level.
 
 ## Future work
 
-This document describes the shipped architecture. The planned enhancements are
-specified separately and are not implemented here:
+This document describes the shipped architecture (159 tests green). The planned
+enhancements are specified separately, are **not implemented**, and are future
+post-thesis work:
 
 - `ROADMAP.md` — index, dependency graph, sequencing and evaluation protocol.
 - `TIER1-CONFORMAL-FUSION.md` — conformal-calibrated, cost-sensitive fusion

@@ -5,13 +5,14 @@ Implements the ``FusionStrategy`` contract from ``docs/CONTRACTS.md``.
 
 from __future__ import annotations
 
-import math
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-from modules.types import (
+from modules.modality_types import (
+    AUDIO,
     EMERGENCY,
     FUSION,
     INDETERMINATE,
+    MOTION,
     NORMAL,
     ModalityScore,
 )
@@ -21,11 +22,9 @@ DEFAULT_THRESHOLD = 0.65
 DEFAULT_MIN_CONFIDENCE = 0.30
 DEFAULT_REQUIRE_TWO = True
 DEFAULT_TEMPORAL_WINDOW = 0.30  # seconds to consider for temporal coherence
-DEFAULT_TEMPORAL_PRECEDENCE = 0.15  # motion must precede audio by this much for strong temporal signal
-DEFAULT_EVENT_DURATION_WINDOW = 0.25  # seconds to track event duration (first-to-last timestamp)
-DEFAULT_TEMPORAL_COHERENCE_THRESHOLD = 0.70  # weighted score must exceed this when temporal signal is strong
-DEFAULT_TEMPORAL_COHERENCE_WEIGHT = 0.25  # how much to boost score when temporal coherence is strong
-DEFAULT_TEMPORAL_WINDOW_EXPANSION = 1.5  # expand the temporal window for multi-scale temporal context
+DEFAULT_TEMPORAL_PRECEDENCE = 0.15  # motion must precede audio by this much
+DEFAULT_Z_SCORE_BOOST = 0.25  # max relative boost per 1 sigma of ambient deviation
+DEFAULT_Z_SCORE_CAP = 3.0  # cap on the averaged |z| used for the boost
 
 
 def _fusion_section(config: object) -> dict:
@@ -51,6 +50,103 @@ def _positive_float(value: object, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return max(0.0, number)
+
+
+def _stat(value: Any, key: str) -> float:
+    """Read ``key`` from a stat dict, or treat the value as the number itself."""
+    if isinstance(value, dict):
+        value = value.get(key, 0.0)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _compute_agreement(effective_scores: List[float]) -> float:
+    """1.0 when the top two scores agree, 0.5 when they contradict."""
+    if len(effective_scores) == 0:
+        return 0.0
+    if len(effective_scores) == 1:
+        return 1.0
+    ordered = sorted(effective_scores, reverse=True)
+    return 1.0 if abs(ordered[0] - ordered[1]) < 0.15 else 0.5
+
+
+def _lookup_modality(table: object, modality: str) -> dict:
+    """Case-insensitive lookup of a modality entry in an ambient stats table."""
+    if not isinstance(table, dict):
+        return {}
+    entry = table.get(modality)
+    if entry is None:
+        entry = table.get(modality.lower())
+    return entry if isinstance(entry, dict) else {}
+
+
+def _ambient_features(cfg: dict) -> Dict[str, List[str]]:
+    """Resolve per-modality ambient feature lists from either config shape."""
+    explicit = cfg.get("ambient_features")
+    if isinstance(explicit, dict) and explicit:
+        return explicit
+    baselines = cfg.get("ambient_baselines")
+    if not isinstance(baselines, dict):
+        return {}
+    per_modality = baselines.get("per_modality")
+    if not isinstance(per_modality, dict):
+        return {}
+    resolved: Dict[str, List[str]] = {}
+    for modality, spec in per_modality.items():
+        features = spec.get("features") if isinstance(spec, dict) else None
+        if isinstance(features, list) and features:
+            resolved[str(modality).upper()] = [str(f) for f in features]
+    return resolved
+
+
+def _apply_ambient_boost(
+    selected: Dict[str, Tuple[ModalityScore, float]],
+    cfg: dict,
+) -> Dict[str, float]:
+    """Boost effective scores that deviate strongly from ambient baselines.
+
+    Returns the applied per-modality boost factors (empty when inactive).
+    The boost is a no-op unless runtime ``ambient_mean``/``ambient_std`` stats
+    are supplied; the repository config only declares which features to track.
+    """
+    features = _ambient_features(cfg)
+    mean_table = cfg.get("ambient_mean")
+    std_table = cfg.get("ambient_std")
+    if not features or not isinstance(mean_table, dict) or not isinstance(std_table, dict):
+        return {}
+
+    strength = _positive_float(cfg.get("z_score_boost"), DEFAULT_Z_SCORE_BOOST)
+    cap = _positive_float(cfg.get("z_score_cap"), DEFAULT_Z_SCORE_CAP)
+    boosts: Dict[str, float] = {}
+
+    for modality, (item, effective) in selected.items():
+        mod_features = features.get(modality, [])
+        mod_mean = _lookup_modality(mean_table, modality)
+        mod_std = _lookup_modality(std_table, modality)
+        z_values: List[float] = []
+        for feat in mod_features:
+            if feat not in mod_mean or feat not in mod_std:
+                continue
+            raw = item.raw_features.get(feat)
+            if raw is None:
+                continue
+            try:
+                raw_val = float(raw)
+            except (TypeError, ValueError):
+                continue
+            std = _stat(mod_std[feat], "std")
+            if std <= 0:
+                continue
+            z_values.append(abs((raw_val - _stat(mod_mean[feat], "mean")) / std))
+        if not z_values:
+            continue
+        avg_z = min(sum(z_values) / len(z_values), cap)
+        factor = 1.0 + strength * avg_z
+        selected[modality] = (item, _clamp01(effective * factor))
+        boosts[modality] = factor
+    return boosts
 
 
 class FusionStrategy:
@@ -85,9 +181,9 @@ class FusionStrategy:
 
         latest_timestamp = 0.0
         selected: Dict[str, Tuple[ModalityScore, float]] = {}
-        event_starts: Dict[str, float] = {}  # track first timestamp per modality for duration
-        event_ends: Dict[str, float] = {}   # track last timestamp per modality for duration
-        temporal_context: Dict[str, List[float]] = {}  # store timestamps per modality for multi-scale analysis
+        event_start: Dict[str, float] = {}
+        event_end: Dict[str, float] = {}
+
         for item in modality_scores:
             if not isinstance(item, ModalityScore):
                 continue
@@ -108,107 +204,81 @@ class FusionStrategy:
             # keeping the highest effective score (first one on a tie).
             if previous is None or effective > previous[1]:
                 selected[modality] = (item, effective)
-                # Track event duration: update start on first entry, end on each new entry
-                if modality not in event_starts or ts < event_starts[modality]:
-                    event_starts[modality] = ts
-                event_ends[modality] = ts
-                # Build temporal context: collect timestamps for multi-scale analysis
-                if modality not in temporal_context:
-                    temporal_context[modality] = []
-                temporal_context[modality].append(ts)
+                if modality not in event_start or ts < event_start[modality]:
+                    event_start[modality] = ts
+                event_end[modality] = ts
 
-        # Compute ambient baseline adjustment: normalize against rolling buffer's
-        # ambient stats if available. This boosts scores that stand out from
-        # typical activity levels.
-        ambient_adjustment = 1.0
-        ambient_features = cfg.get("ambient_features", {})
-        ambient_window = _positive_float(cfg.get("ambient_window"), 30)
-        ambient_mean = cfg.get("ambient_mean", {})
-        ambient_std = cfg.get("ambient_std", {})
+        # Ambient normalization: boost scores that stand out from the rolling
+        # baseline. Inactive unless runtime mean/std stats are configured.
+        ambient_boosts = _apply_ambient_boost(selected, cfg)
 
-        if ambient_features and ambient_mean and ambient_std:
-            # Compute Z-score normalization for each modality's raw features
-            # We compute a composite Z-score per modality, then apply boost once
-            for modality in selected:
-                if modality not in ambient_features:
-                    continue
-                mod_features = ambient_features[modality]
-                mod_mean = ambient_mean.get(modality, {})
-                mod_std = ambient_std.get(modality, {})
-                z_sum = 0.0
-                feat_count = 0
-                for feat in mod_features:
-                    if feat in mod_mean and feat in mod_std:
-                        mean_val = mod_mean[feat]
-                        std_val = mod_std[feat]
-                        raw_val = selected[modality][0].raw_features.get(feat, mean_val)
-                        # Z-score: how many standard deviations from the ambient mean?
-                        z = (raw_val - mean_val["mean"]) / std_val["std"] if std_val["std"] > 0 else 0.0
-                        # Accumulate Z-scores across features
-                        z_sum += abs(z)
-                        feat_count += 1
-
-        # Apply Z-score boost: amplify the modality with strongest deviation from ambient
-        z_score_boost = cfg.get("z_score_boost", 1.0)
-        if z_sum > 0 and feat_count > 0:
-            avg_z = z_sum / feat_count
-            # Apply boost to the modality with strongest Z-score deviation
-            for modality in selected:
-                if modality in ambient_features and avg_z > 0:
-                    z = (selected[modality][0].raw_features.get("brightness", 0) -
-                         ambient_mean["VISION"]["brightness"]["mean"]) / ambient_std["VISION"]["brightness"]["std"]
-                    if z > 0:
-                        selected[modality] = (selected[modality][0], selected[modality][1] * z_score_boost)
-
-        # Compute weighted average across selected modalities
         weighted_score = 0.0
         weight_sum = 0.0
-        for modality, (item, effective) in selected.items():
+        for modality, (_item, effective) in selected.items():
             mod_weight = weights.get(modality, 1.0)
             weighted_score += mod_weight * effective
             weight_sum += mod_weight
-
         if weight_sum > 0:
             weighted_score /= weight_sum
 
-        # Apply ambient adjustment if configured
-        if ambient_adjustment != 1.0:
-            weighted_score = weighted_score * ambient_adjustment
+        # Temporal coherence: all modalities within one window and motion
+        # leading audio by at least the precedence interval is a strong signal.
+        temporal_coherence = 0.0
+        if len(selected) > 1:
+            span = max(event_end.values()) - min(event_start.values())
+            if span <= temporal_window:
+                temporal_coherence = 1.0
+                if (MOTION in selected and AUDIO in selected
+                        and temporal_precedence > 0):
+                    lead = event_start.get(AUDIO, 0.0) - event_start.get(MOTION, 0.0)
+                    # Audio leading motion by a clear margin contradicts the
+                    # expected impact-then-scream ordering.
+                    if lead < -temporal_precedence:
+                        temporal_coherence = 0.5
+            else:
+                temporal_coherence = 0.5
 
-        # Determine the final decision based on threshold and confidence
-        decision = INDETERMINATE
-        if weighted_score >= threshold:
+        if len(selected) == 0:
+            decision = INDETERMINATE
+        elif weighted_score >= threshold:
             decision = EMERGENCY
-        elif weighted_score < threshold:
+        else:
+            decision = NORMAL
+        if require_two and len(selected) == 1 and decision == EMERGENCY:
             decision = NORMAL
 
-        # Build the result object
-        result_dict = {
-            "score": weighted_score,
-            "confidence": weighted_score,  # Use score as proxy for confidence
-            "timestamp": latest_timestamp,
-            "modality_type": FUSION,
-            "raw_features": {},  # Could aggregate raw features from selected modalities
-            "decision": decision,
-            "modalities": list(selected.keys()),
-            "weights": weights,
-            "threshold": threshold,
-            "min_confidence": min_confidence,
-            "ambient_features": ambient_features,
-            "ambient_mean": ambient_mean,
-            "ambient_std": ambient_std,
-            "z_sum": z_sum,
-            "z_score_boost": z_score_boost,
+        weights_used = {
+            modality: (weights.get(modality, 1.0) / weight_sum if weight_sum > 0 else 0.0)
+            for modality in selected
         }
-        result = ModalityScore(
+        duration_span = (
+            max(event_end.values()) - min(event_start.values())
+            if event_start and event_end else 0.0
+        )
+
+        result_dict = {
+            "per_modality": {
+                mod: {"effective_score": effective}
+                for mod, (_item, effective) in selected.items()
+            },
+            "weights_used": weights_used,
+            "weighted_score": weighted_score,
+            "threshold": threshold,
+            "modalities_count": len(selected),
+            "agreement": _compute_agreement([e for _i, e in selected.values()]),
+            "event_start": event_start,
+            "event_end": event_end,
+            "duration_span": duration_span,
+            "temporal_coherence": temporal_coherence,
+        }
+        if ambient_boosts:
+            result_dict["ambient_boosts"] = ambient_boosts
+
+        return ModalityScore(
             score=weighted_score,
             confidence=weighted_score,
             timestamp=latest_timestamp,
             modality_type=FUSION,
-            raw_features={},
+            raw_features=result_dict,
             decision=decision,
         )
-        # Attach metadata as dict attributes
-        result.metadata = result_dict
-        return result
-

@@ -53,7 +53,8 @@ These are enforced in code and covered by tests, not just documented:
 | `modules/user_consent.py` | Per-sensor consent + recording indicator |
 | `modules/evidence_store.py` | Encrypted per-session evidence files |
 | `modules/pipeline.py` | End-to-end wiring, safety audit |
-| `modules/types.py` | Shared contract data types (read-only) |
+| `modules/modality_types.py` | Canonical shared contract types and constants |
+| `modules/types.py` | Backwards-compatible re-export shim for `modality_types` |
 
 ## Quick start
 
@@ -63,8 +64,8 @@ pip install numpy pyyaml pytest
 # configuration
 python -c "from config import load_config; print(load_config()['fusion'])"
 
-# full test suite
-python -m pytest tests/ -v
+# full test suite (159 tests)
+python -m pytest tests/ -q
 
 # swarm barrier (solo stage status + suite report)
 python swarm/barrier.py
@@ -79,7 +80,11 @@ fallback, recorded as `mode: heuristic` in `raw_features` and documented in
 
 All thresholds, fusion weights, the 60 s buffer window, the 15 s countdown and
 the safety flags live in [`config/default.yaml`](./config/default.yaml). No
-magic numbers in the modules.
+magic numbers in the modules. `FusionStrategy` supports an optional ambient
+Z-score boost: when runtime `ambient_mean`/`ambient_std` statistics are supplied
+alongside `ambient_baselines.per_modality` feature lists, scores that deviate
+from the rolling baseline are boosted and reported under
+`raw_features["ambient_boosts"]`.
 
 ## Swarm process
 

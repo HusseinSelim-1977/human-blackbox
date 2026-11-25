@@ -11,7 +11,7 @@ import os
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from modules.types import (EMERGENCY, INDETERMINATE, MOTION, NORMAL, ImuSample,
+from modules.modality_types import (EMERGENCY, INDETERMINATE, MOTION, NORMAL, ImuSample,
                            ModalityScore)
 
 STANDARD_G = 9.80665            # m/s^2 per g (CONTRACTS: accelerometer is m/s^2)
@@ -27,6 +27,23 @@ FREEFALL_SCORE = 0.95           # freefall dominates just below impact
 IMPACT_SCORE = 1.0              # impact dominates
 
 _MISSING = object()
+
+
+def _num(value: Any, default: float) -> float:
+    """Coerce a config value to a finite float, else ``default``."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _count(value: Any, default: int) -> int:
+    """Coerce a config value to a positive-ish int, else ``default``."""
+    try:
+        return int(_num(value, float(default)))
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _vec3(value: Any) -> Optional[List[float]]:
@@ -52,11 +69,12 @@ class MotionDetector:
         self._session: Any = None
         self._mode = "heuristic"
         self._load_model(model_path)
-        seq_len = int(self._cfg(self._config, ("detectors", "motion", "sequence_length"), 16))
+        seq_len = max(1, _count(
+            self._cfg(self._config, ("detectors", "motion", "sequence_length"), 16), 16))
         # Rolling window of (timestamp, |a| m/s^2, |gyro| rad/s, jerk), per-instance.
         self._history: Deque[Tuple[float, float, float, float]] = deque(maxlen=seq_len)
 
-    def _cfg(self, cfg: dict, path: Tuple[str, ...], default: Any) -> Any:
+    def _cfg(self, cfg: dict, path: Tuple[str, ...], default: Any = None) -> Any:
         """Nested key lookup: predict-time config first, then the init one."""
         for src in (cfg, self._config):
             node: Any = src
@@ -116,22 +134,30 @@ class MotionDetector:
         cfg = dict(config) if config else {}
         parsed = self._parse(imu_sample)
         if parsed is None:  # malformed input never touches the rolling history
+            raw = {"accel_magnitude": None, "gyro_magnitude": None, "jerk": None,
+                   "freefall": False, "impact": False, "temperature_c": None,
+                   "pressure_hpa": None, "activity": None, "mode": self._mode,
+                   "error": "invalid imu sample"}
             return ModalityScore(0.0, 0.0, INDETERMINATE,
                                  getattr(imu_sample, "timestamp", 0.0), MOTION,
-                                 {"mode": self._mode, "error": "invalid imu sample"})
+                                 raw)
         ts, acc, gyro, temp, press = parsed
-        freefall_g = float(self._cfg(cfg, ("detectors", "motion", "freefall_g"), 0.35))
-        min_ff = int(self._cfg(cfg, ("detectors", "motion", "freefall_min_samples"), 3))
-        impact_g = float(self._cfg(cfg, ("detectors", "motion", "impact_g"), 3.0))
-        window_sec = float(self._cfg(cfg, ("detectors", "motion", "window_sec"), 1.0))
-        seq_len = int(self._cfg(cfg, ("detectors", "motion", "sequence_length"), 16))
-        t_low = float(self._cfg(cfg, ("emergency_thresholds", "temperature_low"), 10.0))
-        t_high = float(self._cfg(cfg, ("emergency_thresholds", "temperature_high"), 40.0))
+        freefall_g = _num(self._cfg(cfg, ("detectors", "motion", "freefall_g")), 0.35)
+        min_ff = max(1, _count(
+            self._cfg(cfg, ("detectors", "motion", "freefall_min_samples")), 3))
+        impact_g = _num(self._cfg(cfg, ("detectors", "motion", "impact_g")), 3.0)
+        window_sec = _num(self._cfg(cfg, ("detectors", "motion", "window_sec")), 1.0)
+        seq_len = max(1, _count(
+            self._cfg(cfg, ("detectors", "motion", "sequence_length")), 16))
+        t_low = _num(self._cfg(cfg, ("emergency_thresholds", "temperature_low")), 10.0)
+        t_high = _num(self._cfg(cfg, ("emergency_thresholds", "temperature_high")), 40.0)
         accel_mag = math.sqrt(acc[0] ** 2 + acc[1] ** 2 + acc[2] ** 2)
         gyro_mag = math.sqrt(gyro[0] ** 2 + gyro[1] ** 2 + gyro[2] ** 2)
         jerk = 0.0
         if self._history and ts > self._history[-1][0]:
             jerk = abs(accel_mag - self._history[-1][1]) / (ts - self._history[-1][0])
+            if not math.isfinite(jerk):  # pathological dt underflow
+                jerk = JERK_FULL_SCALE
         self._history.append((ts, accel_mag, gyro_mag, jerk))
         while len(self._history) > 1 and ts - self._history[0][0] > window_sec:
             self._history.popleft()  # keep only the recent window
@@ -140,7 +166,7 @@ class MotionDetector:
             if prev_a / STANDARD_G >= freefall_g:
                 break
             streak += 1
-        freefall = streak >= min_ff
+        freefall = streak >= min_ff and streak > 0
         impact = accel_mag / STANDARD_G >= impact_g
 
         # Activity: deviation from 1 g, jerk, orientation change (gyro rate).
@@ -164,8 +190,13 @@ class MotionDetector:
         if not PRESSURE_MIN_HPA <= press <= PRESSURE_MAX_HPA:
             confidence *= 0.5  # implausible barometer -> suspect reading
         confidence = min(1.0, confidence)
+        score = _num(score, 0.0)
+        confidence = _num(confidence, 0.0)
+        score = min(max(score, 0.0), 1.0)
+        confidence = min(max(confidence, 0.0), 1.0)
 
-        threshold = float(self._cfg(cfg, ("detectors", "motion", "threshold"), 0.80))
+        threshold = _num(
+            self._cfg(cfg, ("detectors", "motion", "threshold")), 0.80)
         if score >= threshold and confidence >= MIN_CONFIDENCE:
             decision = EMERGENCY
         elif score >= threshold:

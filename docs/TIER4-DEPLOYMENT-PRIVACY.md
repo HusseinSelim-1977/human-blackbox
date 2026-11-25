@@ -1,6 +1,6 @@
 # Tier 4 Design — Deployment Hardening, Privacy-by-Sensor, and Edge Budgets
 
-Status: design proposal (not yet implemented)
+Status: future design proposal — not implemented in the shipped 159-test baseline.
 Target modules: `modules/rolling_buffer.py` (real AEAD),
 `modules/key_store.py` (new), `modules/thermal_detector.py` (new, optional),
 `modules/mmwave_detector.py` (new, optional), `modules/budget.py` (new),

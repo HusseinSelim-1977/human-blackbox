@@ -18,7 +18,7 @@ import os
 
 import numpy as np
 
-from modules.types import (
+from modules.modality_types import (
     AUDIO,
     EMERGENCY,
     INDETERMINATE,
@@ -37,6 +37,16 @@ _SILENCE_DBFS = -120.0
 _MIN_CONFIDENCE = 0.3
 # Zero-crossing rate of broadband noise (~0.5); normalises the ZCR feature.
 _ZCR_NORM = 0.5
+_DEFAULT_SAMPLE_RATE = 16000.0
+
+
+def _num(value, default: float) -> float:
+    """Coerce a config value to a finite float, else ``default``."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
 
 
 class AudioDetector:
@@ -72,19 +82,34 @@ class AudioDetector:
 
         Returns a ModalityScore (fields per docs/CONTRACTS.md).
         """
-        cfg = dict(config) if config else dict(self._config)
-        audio_cfg = cfg.get("detectors", {}).get("audio", {}) or {}
-        threshold = float(audio_cfg.get("threshold", 0.5))
-        sample_rate = float(audio_cfg.get("sample_rate_hz", 16000.0))
-        window_sec = float(audio_cfg.get("window_sec", 0.975))
-        threshold_db = float(
-            cfg.get("emergency_thresholds", {}).get("audio_noise", 80.0)
+        cfg = (dict(config) if isinstance(config, dict) and config
+               else dict(self._config))
+        detectors = cfg.get("detectors")
+        audio_cfg = detectors.get("audio") if isinstance(detectors, dict) else None
+        if not isinstance(audio_cfg, dict):
+            audio_cfg = {}
+        thresholds = cfg.get("emergency_thresholds")
+        threshold = _num(audio_cfg.get("threshold"), 0.5)
+        sample_rate = _num(audio_cfg.get("sample_rate_hz"), _DEFAULT_SAMPLE_RATE)
+        if sample_rate <= 0.0:
+            sample_rate = _DEFAULT_SAMPLE_RATE
+        window_sec = _num(audio_cfg.get("window_sec"), 0.975)
+        threshold_db = _num(
+            thresholds.get("audio_noise") if isinstance(thresholds, dict) else None,
+            80.0,
         )
+        timestamp = getattr(audio_chunk, "timestamp", 0.0)
+        source_id = getattr(audio_chunk, "source_id", None)
 
+        data = getattr(audio_chunk, "audio_data", None)
+        try:
+            has_data = data is not None and len(data) > 0
+        except TypeError:  # scalar / non-sized payload
+            has_data = False
         samples = None
-        if audio_chunk.audio_data:
+        if has_data:
             try:
-                arr = np.asarray(audio_chunk.audio_data, dtype=np.float64)
+                arr = np.asarray(data, dtype=np.float64)
                 if arr.size and bool(np.isfinite(arr).all()):
                     samples = arr
             except (TypeError, ValueError):
@@ -93,17 +118,18 @@ class AudioDetector:
             # Empty or non-finite audio -> INDETERMINATE, confidence 0.0.
             raw = {
                 "rms_db_spl": None,
+                "energy": None,
                 "peak": None,
                 "zcr": None,
                 "spectral_centroid_hz": None,
                 "spectral_flatness": None,
                 "threshold_db": threshold_db,
                 "mode": self._mode,
-                "source_id": audio_chunk.source_id,
+                "source_id": source_id,
                 "reason": "empty_or_non_finite_audio",
             }
             return ModalityScore(0.0, 0.0, INDETERMINATE,
-                                 audio_chunk.timestamp, AUDIO, raw)
+                                 timestamp, AUDIO, raw)
 
         feats = self._features(samples, sample_rate)
         mode = self._mode
@@ -117,21 +143,27 @@ class AudioDetector:
                 mode = "heuristic"
         else:
             score, confidence = self._heuristic(feats, threshold_db)
-        score = float(min(max(score, 0.0), 1.0))
-        confidence = float(min(max(confidence, 0.0), 1.0))
+        # Clamp to [0, 1]; non-finite model output collapses to 0.0.
+        score = _num(min(max(score, 0.0), 1.0), 0.0)
+        confidence = _num(min(max(confidence, 0.0), 1.0), 0.0)
         decision = (EMERGENCY if score >= threshold
                     and confidence >= _MIN_CONFIDENCE else NORMAL)
         raw = dict(feats, threshold_db=threshold_db, mode=mode,
-                   source_id=audio_chunk.source_id)
+                   source_id=source_id)
         return ModalityScore(score, confidence, decision,
-                             audio_chunk.timestamp, AUDIO, raw)
+                             timestamp, AUDIO, raw)
 
     @staticmethod
     def _features(samples: np.ndarray, sample_rate: float) -> dict:
         """Compute deterministic time- and frequency-domain features."""
         n = samples.size
         peak = float(np.max(np.abs(samples))) if n else 0.0
-        rms = math.sqrt(float(np.mean(samples * samples))) if n else 0.0
+        # Scale by peak first so huge amplitudes cannot overflow rms to inf.
+        if n and peak > 0.0:
+            scaled = samples / peak
+            rms = peak * math.sqrt(float(np.mean(scaled * scaled)))
+        else:
+            rms = 0.0
         dbfs = 20.0 * math.log10(rms) if rms > 0.0 else _SILENCE_DBFS
         zcr = (float(np.count_nonzero(np.diff(np.sign(samples)))) / (n - 1)
                if n > 1 else 0.0)
@@ -150,6 +182,7 @@ class AudioDetector:
             flatness = 0.0
         return {
             "rms_db_spl": dbfs + _DBFS_TO_SPL,
+            "energy": rms,
             "peak": peak,
             "zcr": zcr,
             "spectral_centroid_hz": centroid,

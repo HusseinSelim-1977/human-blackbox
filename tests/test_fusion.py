@@ -6,7 +6,7 @@ import pytest
 
 from config import load_config
 from modules.fusion import FusionStrategy
-from modules.types import (
+from modules.modality_types import (
     AUDIO,
     EMERGENCY,
     FUSION,
@@ -51,13 +51,12 @@ def test_empty_input_is_indeterminate():
     assert result.modality_type == FUSION
     assert result.raw_features["modalities_count"] == 0
     assert result.raw_features["agreement"] == 0.0
-    # temporal_coherence is included for temporal-aware fusion logic
-    assert set(result.raw_features) == {
-        "per_modality", "weights_used", "weighted_score",
-        "threshold", "modalities_count", "agreement",
-        "event_start", "event_end", "duration_span",
-        "temporal_coherence",
-    }
+    # Result shape is exact: no ambient keys leak in when no stats are supplied.
+    expected_keys = {"per_modality", "weights_used", "weighted_score",
+                     "threshold", "modalities_count", "agreement",
+                     "event_start", "event_end", "duration_span",
+                     "temporal_coherence"}
+    assert set(result.raw_features) == expected_keys
 
 
 def test_single_high_audio_is_normal_due_to_two_modality_rule():

@@ -1,6 +1,6 @@
 # Tier 2 Design — Temporal Models and Event-Level Fusion
 
-Status: design proposal (not yet implemented)
+Status: future design proposal — not implemented in the shipped 159-test baseline.
 Target modules: `modules/temporal.py` (new), `modules/motion_detector.py`
 (extend), `modules/fusion.py` (extend), `modules/pipeline.py` (wire),
 `config/default.yaml` (extend), `tests/test_temporal.py` (new), `training/`

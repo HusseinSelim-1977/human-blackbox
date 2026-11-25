@@ -1,6 +1,7 @@
 # Enhancement Roadmap — Index
 
-Status: planning artifact
+Status: post-thesis planning artifact (no tier is implemented in the shipped
+baseline)
 Scope: Human BlackBox (`human-blackbox/`), on-device multi-modal emergency
 detection
 Companion files (published names in `human-blackbox/docs/`):
@@ -20,13 +21,14 @@ Source-to-docs filename map:
 
 ## 0. Baseline (what exists today)
 
-Eight modules, ~150 tests, all green; swarm state `5-FINAL`, 8/8 SHIP.
+Eight modules, 159 tests, all green; swarm state `COMPLETE / SHIP`, 8/8 SHIP.
 
 - **Audio** — YAMNet hook + heuristic fallback. Works; fallback is silent.
 - **Motion** — LSTM hook + hand-tuned heuristic. Works; per-instant only.
 - **Vision** — YOLOv8n hook + heuristic fallback. Works; RGB privacy risk.
-- **Fusion** — fixed weights 0.35/0.40/0.25, threshold 0.65. No error
-  guarantee, cost-blind.
+- **Fusion** — confidence-gated weights 0.40/0.35/0.25, threshold 0.55,
+  temporal coherence, event spans and an optional ambient Z-score boost. No
+  error guarantee, cost-blind.
 - **Buffer** — XOR + HMAC stand-in, 60 s. Not AEAD; documented as stand-in.
 - **Alert** — 15 s cancellable countdown. Solid.
 - **Consent** — scope-based. Solid; needs a `federation` scope.
@@ -36,6 +38,9 @@ Every weakness below is a consequence of four gaps: **no calibration**, **no
 temporal event**, **no personalization**, **no deployment budget**.
 
 ## 1. Tier summary
+
+None of the tiers below is implemented in the shipped 159-test baseline. They
+are post-thesis proposals, retained as design records.
 
 - **Tier 1 — Rigor.** Conformal threshold + cost-sensitive policy + mode-aware
   confidence. Risk if skipped: claims stay anecdotal; false-alarm rate

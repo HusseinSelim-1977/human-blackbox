@@ -1,6 +1,6 @@
 # Tier 3 Design — On-Device Personalization and Privacy-Preserving Learning
 
-Status: design proposal (not yet implemented)
+Status: future design proposal — not implemented in the shipped 159-test baseline.
 Target modules: `modules/adaptation.py` (new), `modules/replay.py` (new),
 `federation/client.py` (new, opt-in, not imported by runtime),
 `modules/pipeline.py` (hook), `modules/user_consent.py` (extend scopes),

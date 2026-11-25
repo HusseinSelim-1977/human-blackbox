@@ -1,8 +1,10 @@
 # Modality-Specific Calibration Report
 
-**Date:** November 24, 2026  
+**Date:** November 24, 2026 (final: November 25, 2026)  
 **Focus:** Tuning per-modality scores for improved emergency detection  
-**Mode:** Heuristic fallback (model paths exist but runtime imports are fragile)
+**Status:** Applied — the tuned values below are now in `config/default.yaml`
+and the 159-test suite is green.  
+**Mode:** Heuristic fallback unless model runtimes are available.
 
 ---
 
@@ -16,7 +18,7 @@ All three detectors currently operate in "heuristic fallback" mode, relying on h
 
 ### Vision Detector (`modules/vision_detector.py`)
 
-**Current Config:** `threshold: 0.50`  
+**Baseline Config (before tuning):** `threshold: 0.50`  
 **Sensor Context:** RGB camera (fire/obstruction/person cues)
 
 **Key Behaviors:**
@@ -39,7 +41,7 @@ The vision detector is tuned for *contrast*—it needs bright, saturated pixels 
 
 ### Audio Detector (`modules/audio_detector.py`)
 
-**Current Config:** `threshold: 0.50`, `audio_noise: 80.0 dB`  
+**Baseline Config (before tuning):** `threshold: 0.50`, `audio_noise: 80.0 dB`  
 **Sensor Context:** Microphone (RMS/ZCR/flatness blending)
 
 **Key Behaviors:**
@@ -61,7 +63,7 @@ Audio is *spectrally selective*—it rewards broadband energy over tonal spikes.
 
 ### Motion Detector (`modules/motion_detector.py`)
 
-**Current Config:** `threshold: 0.80`, `freefall_g: 0.35`, `impact_g: 3.0`  
+**Baseline Config (before tuning):** `threshold: 0.80`, `freefall_g: 0.35`, `impact_g: 3.0`  
 **Sensor Context:** Accelerometer (rolling-window activity/thermal/freefall)
 
 **Key Behaviors:**
@@ -83,7 +85,7 @@ Motion is *sequence-aware*—it needs sustained deviation to trigger. The 0.80 t
 
 ## Fusion Strategy
 
-**Current Config:** `mode: "adaptive"`, `weights: {AUDIO: 0.35, MOTION: 0.40, VISION: 0.25}`  
+**Baseline Config (before tuning):** `mode: "adaptive"`, `weights: {AUDIO: 0.35, MOTION: 0.40, VISION: 0.25}`, `threshold: 0.65`  
 **Behavior:** Two modalities required; effective score = `score * confidence` when below `min_confidence`
 
 **Calibration Insight:**
@@ -96,7 +98,9 @@ Motion dominates (0.40) but has the highest threshold (0.80). Audio is well-cali
 
 ---
 
-## Quick-Apply Config Edits
+## Applied Config Edits
+
+These values are now in `config/default.yaml`:
 
 ```yaml
 # config/default.yaml
@@ -152,9 +156,9 @@ fusion:
 
 ## Next Steps
 
-1. **Apply config edits** (see above)
-2. **Run test suite** to verify no regressions
-3. **Monitor false positives** in low-light and mid-level audio scenarios
+1. **Config edits applied** (see above) ✓
+2. **Test suite run:** 159 passed ✓
+3. **Monitor false positives** in low-light and mid-level audio scenarios during deployment
 4. **Iterate** on `freefall_g` if freefall events feel too aggressive
 
 ---
