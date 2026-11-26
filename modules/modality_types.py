@@ -79,16 +79,16 @@ class ModalityScore:
       - ``context_tags``: metadata describing environmental conditions
     """
 
-    def __init__(self, score: float, confidence: float, decision: str,
-                 timestamp: float, modality_type: str,
-                 raw_features: Dict[str, Any],
+    def __init__(self, score: float, confidence: float, decision: str = None,
+                 timestamp: float = 0.0, modality_type: str = "UNKNOWN",
+                 raw_features: Dict[str, Any] = None,
                  normalized_score: float = 1.0,
                  baseline_mean: Dict[str, float] = None,
                  baseline_std: Dict[str, float] = None,
                  context_tags: Dict[str, str] = None):
         self.score = score
         self.confidence = confidence
-        self.decision = decision
+        self.decision = decision or "UNKNOWN"
         self.timestamp = timestamp
         self.modality_type = modality_type
         self.raw_features = raw_features

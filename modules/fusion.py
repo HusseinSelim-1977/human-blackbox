@@ -111,7 +111,9 @@ def _apply_ambient_boost(
     The boost is a no-op unless runtime ``ambient_mean``/``ambient_std`` stats
     are supplied; the repository config only declares which features to track.
     """
-    features = _ambient_features(cfg)
+    if not isinstance(cfg, dict):
+        return {}
+    features = _ambient_features(cfg) or {}
     mean_table = cfg.get("ambient_mean")
     std_table = cfg.get("ambient_std")
     if not features or not isinstance(mean_table, dict) or not isinstance(std_table, dict):
@@ -123,6 +125,15 @@ def _apply_ambient_boost(
 
     for modality, (item, effective) in selected.items():
         mod_features = features.get(modality, [])
+        # Ambient normalization: boost scores that stand out from the rolling
+        # baseline. Inactive unless runtime mean/std stats are configured.
+        ambient_cfg = config.get("fusion") if config else None
+        mean_table = (cfg.get("ambient_mean") or
+                      ambient_cfg.get("fusion", {}).get("ambient_baselines", {})
+                      .get("per_modality")) if ambient_cfg else {}
+        std_table = (cfg.get("ambient_std") or
+                     ambient_cfg.get("fusion", {}).get("ambient_baselines", {})
+                     .get("per_modality")) if ambient_cfg else {}
         mod_mean = _lookup_modality(mean_table, modality)
         mod_std = _lookup_modality(std_table, modality)
         z_values: List[float] = []
@@ -152,8 +163,13 @@ def _apply_ambient_boost(
 class FusionStrategy:
     """Combine modality scores using normalised weights and a confidence gate."""
 
-    def __init__(self, config: dict):
-        self.config = config if isinstance(config, dict) else {}
+    def __init__(self, config: dict = None):
+        """Initialise the fusion strategy with an optional config.
+
+        Arguments:
+            config: a bare fusion sub-config (weights, threshold, etc.) or None
+        """
+        self.config = config if isinstance(config, dict) and config else {}
 
     def decide(self,
                modality_scores: List[ModalityScore],
@@ -210,7 +226,8 @@ class FusionStrategy:
 
         # Ambient normalization: boost scores that stand out from the rolling
         # baseline. Inactive unless runtime mean/std stats are configured.
-        ambient_boosts = _apply_ambient_boost(selected, cfg)
+        ambient_cfg = config.get("fusion") if config else None
+        ambient_boosts = _apply_ambient_boost(selected, ambient_cfg)
 
         weighted_score = 0.0
         weight_sum = 0.0
