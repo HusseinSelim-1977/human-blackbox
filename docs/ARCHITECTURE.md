@@ -14,7 +14,64 @@ the user explicitly opts in.
 drivers, and receives every collaborator through its constructor so it can be
 tested deterministically with stubs.
 
-## Flow
+## v2 module and deployment view (skeleton, unbuilt)
+
+The 11-module Gradle project (`settings.gradle.kts`) is present with build files
+and source skeletons. The diagram below is the intended v2 wiring; it is **not a
+record of a running build**. Kotlin modules have not been compiled, models are
+absent, and the app screen is a stub. The Python pipeline described later in
+this document is the only runnable implementation today.
+
+```mermaid
+flowchart TD
+  subgraph Device["On-device Android app (:app; minSdk 29)"]
+    MIC["Microphone: 16 kHz PCM"] --> SENS["SensorPipeline (:sensors)"]
+    IMU["IMU: 100 Hz accelerometer"] --> SENS
+    CAM["CameraX: RGB frames, 320x320"] --> SENS
+    SENS --> AUDIO["AudioClassifier (:ml-audio)<br/>log-mel [1,96,64,1]"]
+    SENS --> MOTION["MotionClassifier (:ml-motion)<br/>IMU window [1,32,9]"]
+    SENS --> VISION["VisionClassifier (:ml-vision)<br/>RGB [1,320,320,3] + pose/temporal"]
+    AUDIO --> DET["Detection probabilities (:core)"]
+    MOTION --> DET
+    VISION --> DET
+    DET --> FUSE["FusionEngine (:ml-fusion)<br/>history [1,8,27], hysteresis"]
+    FUSE --> DEC["Decision + explanation (:core)"]
+    SOS["Manual SOS button (UI stub)"] -. bypasses models/thresholds .-> ACT["Action: CHECK_IN / NOTIFY_CONTACTS / MANUAL_SOS"]
+    DEC --> ACT
+    ACT --> ALERT["Local alert: 15 s user-cancellable countdown"]
+    ALERT --> CONF{"User confirms or cancels?"}
+    CONF -->|confirm| LOCAL["Local notification / contact action"]
+    CONF -->|cancel| DROP["No alert sent"]
+    SENS -. raw chunks .-> BUF[("60 s rolling encrypted evidence (:data)<br/>Keystore AES-256-GCM")]
+    DET -. scores .-> BUF
+    BUF --> SNAP["Locked EvidenceBundle (:core)"]
+    SNAP --> CONSENT{"Explicit evidence-upload consent (:data)<br/>default false"}
+    CONSENT -->|granted| UP["ConsentedEvidenceUploader (:cloud)<br/>encrypted evidence only"]
+    CONSENT -->|not granted| KEEP["Stays on device"]
+  end
+  DEC -->|"minimal metadata: event, confidence, time, coarse location, status"| FCM["FCM topic 'alerts' (:cloud)"]
+  FCM --> RCVR["Operator alert receiver (cloud-only; not present in repo)"]
+  UP --> STORE["Firebase Storage evidence/ (operator config)"]
+  MODS["Cross-cutting: :core contracts, :data privacy/crypto,<br/>:testing BenchmarkHarness, :scripts helpers"]
+```
+
+Key boundaries:
+- `:core` owns shared contracts (`Detection`, `Decision`, `EvidenceBundle`);
+  `:sensors` owns capture Flows; each `:ml-*` module owns one inference head;
+  `:ml-fusion` owns temporal fusion; `:data` owns preferences and encrypted
+  evidence; `:cloud` owns FCM/Firestore/Storage gateways; `:app` wires them.
+- Inference and the 60 s evidence buffer are local. Default alert payload is
+  metadata only. Evidence upload is a separate, consent-gated capability.
+- **No automatic emergency call exists.** Any such integration needs explicit
+  configuration, user confirmation and legal review.
+- Known gaps blocking this wiring: fusion declares `[1,8,27]` but writes 33
+  values per tick in `FusionEngine.decide`; capture currently supplies no gyro
+  (motion input needs nine features); `:cloud` has no Firebase Auth dependency;
+  the SOS button callback is unimplemented. See
+  [`MODEL_CARDS.md`](./MODEL_CARDS.md) and
+  [`PHASED_PLAN.md`](./PHASED_PLAN.md).
+
+## Flow (runnable Python baseline)
 
 ```text
  microphone ──> AudioDetector ──┐
@@ -141,3 +198,13 @@ post-thesis work:
 
 Every item is designed to ship behind an `enabled: false` flag so the current
 behaviour in this document remains byte-identical.
+
+## v2 documentation index
+
+- [`MODEL_CARDS.md`](./MODEL_CARDS.md) — audio, motion, vision, fusion and
+  personalization contracts; all metrics TBD/unmeasured.
+- [`DEPLOYMENT_GUIDE.md`](./DEPLOYMENT_GUIDE.md) — configuration placeholders,
+  privacy defaults and required operator inputs.
+- [`PHASED_PLAN.md`](./PHASED_PLAN.md) — seven phases with gates and blockers.
+- [`EVALUATION_PLAN.md`](./EVALUATION_PLAN.md) — metrics, splits and conditions;
+  no results claimed.

@@ -9,6 +9,39 @@ leaves the device.
 This repository is a working replication of the architecture, built by eight
 senior specialists working in parallel under a shared contract.
 
+> **Assistive tool only — not authoritative emergency detection.** **No automatic
+> emergency calls are implemented or authorized.** Any future calling/PSAP
+> integration requires explicit configuration, user confirmation and legal
+> review before use.
+
+## v2 migration status
+
+The Human BlackBox v2 multi-module project is present with build files and
+source skeletons/wiring files for **all 11 modules** (`:core`, `:sensors`,
+`:ml-audio`, `:ml-motion`, `:ml-vision`, `:ml-fusion`, `:data`, `:cloud`,
+`:testing`, `:scripts`, `:app`) plus Python feature/training/conversion helpers.
+
+**v2 remains unbuilt and unbenchmarked.** There is no Gradle wrapper/Gradle
+executable, Android SDK, Firebase/FCM/Firestore/Auth configuration, trained or
+quantized model bundle, dataset with licenses, target hardware or measured
+result in this checkout. The Compose SOS screen is a UI stub rather than
+production wiring; no cloud-only Docker/Kubernetes components or credentials
+are present. The runnable implementation today remains the Python pipeline
+below with heuristic fallbacks (baseline suite reported as 159 tests). Nothing
+is downloaded and no result is invented by default. Before continuing, the
+operator must supply the SDK/wrapper, dataset paths and licenses, model
+artifacts, Firebase configuration/secrets, and target hardware.
+
+Documentation for the unresolved v2 work:
+
+| Document | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | v2 module diagram, on-device flow, 60 s evidence buffer, local alert/FCM, consent-gated upload |
+| [`docs/MODEL_CARDS.md`](./docs/MODEL_CARDS.md) | Audio, Motion, Vision, Fusion, Personalization cards; all metrics TBD/unmeasured |
+| [`docs/DEPLOYMENT_GUIDE.md`](./docs/DEPLOYMENT_GUIDE.md) | Firebase placeholders, cloud-only components, privacy defaults, required inputs |
+| [`docs/PHASED_PLAN.md`](./docs/PHASED_PLAN.md) | Phases 1–7, gates and blockers |
+| [`docs/EVALUATION_PLAN.md`](./docs/EVALUATION_PLAN.md) | Metrics, splits and conditions; no results claimed |
+
 ## Pipeline
 
 ```text
@@ -28,7 +61,8 @@ Full diagram and failure modes:
 
 ## Safety guarantees
 
-These are enforced in code and covered by tests, not just documented:
+These are enforced in the runnable Python baseline and covered by its tests,
+not just documented; the v2 skeletons are not yet built or verified:
 
 1. **Visible recording indicator** —
    `UserConsentManager.recording_indicator_visible`

@@ -104,6 +104,8 @@ def _ambient_features(cfg: dict) -> Dict[str, List[str]]:
 def _apply_ambient_boost(
     selected: Dict[str, Tuple[ModalityScore, float]],
     cfg: dict,
+    mean_table: object,
+    std_table: object,
 ) -> Dict[str, float]:
     """Boost effective scores that deviate strongly from ambient baselines.
 
@@ -114,8 +116,6 @@ def _apply_ambient_boost(
     if not isinstance(cfg, dict):
         return {}
     features = _ambient_features(cfg) or {}
-    mean_table = cfg.get("ambient_mean")
-    std_table = cfg.get("ambient_std")
     if not features or not isinstance(mean_table, dict) or not isinstance(std_table, dict):
         return {}
 
@@ -127,13 +127,6 @@ def _apply_ambient_boost(
         mod_features = features.get(modality, [])
         # Ambient normalization: boost scores that stand out from the rolling
         # baseline. Inactive unless runtime mean/std stats are configured.
-        ambient_cfg = config.get("fusion") if config else None
-        mean_table = (cfg.get("ambient_mean") or
-                      ambient_cfg.get("fusion", {}).get("ambient_baselines", {})
-                      .get("per_modality")) if ambient_cfg else {}
-        std_table = (cfg.get("ambient_std") or
-                     ambient_cfg.get("fusion", {}).get("ambient_baselines", {})
-                     .get("per_modality")) if ambient_cfg else {}
         mod_mean = _lookup_modality(mean_table, modality)
         mod_std = _lookup_modality(std_table, modality)
         z_values: List[float] = []
@@ -226,8 +219,14 @@ class FusionStrategy:
 
         # Ambient normalization: boost scores that stand out from the rolling
         # baseline. Inactive unless runtime mean/std stats are configured.
-        ambient_cfg = config.get("fusion") if config else None
-        ambient_boosts = _apply_ambient_boost(selected, ambient_cfg)
+        source_cfg = config if isinstance(config, dict) else self.config
+        mean_table = cfg.get("ambient_mean") or (
+            source_cfg.get("ambient_mean") if isinstance(source_cfg, dict) else None
+        )
+        std_table = cfg.get("ambient_std") or (
+            source_cfg.get("ambient_std") if isinstance(source_cfg, dict) else None
+        )
+        ambient_boosts = _apply_ambient_boost(selected, cfg, mean_table, std_table)
 
         weighted_score = 0.0
         weight_sum = 0.0

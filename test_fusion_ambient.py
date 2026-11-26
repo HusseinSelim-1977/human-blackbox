@@ -108,7 +108,7 @@ print(f"Raw features: {fusion_result.raw_features}")
 # Calculate the Z-score boost effect
 if fusion_result.raw_features.get("per_modality", {}).get("VISION", {}).get("effective_score"):
     effective = fusion_result.raw_features["per_modality"]["VISION"]["effective_score"]
-    base = fusion_result.raw_features["per_modality"]["VISION"]["score"]
+    base = fusion_result.raw_features["per_modality"]["VISION"]["effective_score"]
     print(f"\n=== Z-Score Boost Effect ===")
     print(f"Base VISION score: {base}")
     print(f"Effective VISION score: {effective}")

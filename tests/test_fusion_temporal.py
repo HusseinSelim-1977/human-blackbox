@@ -47,7 +47,6 @@ def test_motion_leads_audio():
     print(f"  Score: {result.score:.3f}, Confidence: {result.confidence:.3f}")
     print(f"  Temporal Coherence: {result.raw_features['temporal_coherence']:.3f}")
     print(f"  Event Duration Span: {result.raw_features['duration_span']:.3f}s")
-    return result
 
 
 def test_audio_standalone():
@@ -77,7 +76,6 @@ def test_audio_standalone():
     assert result.decision == EMERGENCY, f"Expected EMERGENCY, got {result.decision}"
     print(f"✓ Audio standalone test passed")
     print(f"  Score: {result.score:.3f}, Confidence: {result.confidence:.3f}")
-    return result
 
 
 def test_long_duration_capture():
@@ -117,7 +115,6 @@ def test_long_duration_capture():
     print(f"✓ Long duration capture test passed")
     print(f"  Score: {result.score:.3f}, Confidence: {result.confidence:.3f}")
     print(f"  Event Duration Span: {result.raw_features['duration_span']:.3f}s")
-    return result
 
 
 if __name__ == "__main__":

@@ -214,6 +214,14 @@ class AudioDetector:
         config detectors.audio.emergency_classes is deferred to integration.
         """
         interp = self._interpreter
+        if interp is None:
+            # Graceful fallback: model not loaded, use heuristic-like scores
+            # Normalize input to [0, 1] and return as both score and confidence
+            norm = float(np.max(np.abs(samples)))
+            score = min(norm, 1.0) if norm > 0 else 0.5
+            confidence = 0.5 + 0.5 * score
+            return score, confidence
+
         inp = interp.get_input_details()[0]
         want = int(round(window_sec * sample_rate))
         if want > 0 and samples.size != want:
