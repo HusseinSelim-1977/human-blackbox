@@ -108,6 +108,13 @@ class LocalEventStore(context: Context) {
         prefs.edit().putBoolean(KEY_LOCATION_CONSENT, enabled).apply()
     }
 
+    /** Explicit, revocable preference only; this build never dispatches a cloud alert. */
+    fun cloudAlertOptIn(): Boolean = prefs.getBoolean(KEY_CLOUD_ALERT_OPT_IN, false)
+
+    fun setCloudAlertOptIn(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_CLOUD_ALERT_OPT_IN, enabled).apply()
+    }
+
     private fun encodeContact(contact: EmergencyContact) = JSONObject()
         .put("id", contact.id)
         .put("name", contact.name)
@@ -128,6 +135,7 @@ class LocalEventStore(context: Context) {
         private const val KEY_CONTACTS = "emergency_contacts"
         private const val KEY_EVENTS = "local_sos_events"
         private const val KEY_LOCATION_CONSENT = "coarse_location_consent"
+        private const val KEY_CLOUD_ALERT_OPT_IN = "cloud_alert_opt_in"
         private const val MAX_EVENTS = 100
     }
 }

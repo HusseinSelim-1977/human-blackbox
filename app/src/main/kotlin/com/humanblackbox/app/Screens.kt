@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -23,10 +24,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.humanblackbox.core.Decision
 import com.humanblackbox.core.Modality
-import com.humanblackbox.core.ModelStatus
 import java.time.Instant
 
 @Composable
@@ -45,6 +47,8 @@ fun SosSection(
     lastDecision: Decision?,
     notice: String?,
     testMode: Boolean,
+    checkIn: LocalCheckInState?,
+    onConfirmCheckIn: () -> Unit,
     micGranted: Boolean,
     cameraGranted: Boolean,
     locationGranted: Boolean,
@@ -96,6 +100,45 @@ fun SosSection(
             }
         }
 
+        checkIn?.let { state ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        if (state.escalated) {
+                            "Check-in missed: local escalation sent"
+                        } else {
+                            "Check-in required: ${state.secondsLeft} s left to cancel"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        if (state.testMode) {
+                            "TEST mode: countdown and escalation are local only."
+                        } else {
+                            "Escalation is a local notification only: no call, SMS or service contacted."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = onConfirmCheckIn,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics {
+                            contentDescription = if (state.escalated) {
+                                "Acknowledge the local escalation"
+                            } else {
+                                "Confirm I am OK and cancel the local SOS escalation"
+                            }
+                        },
+                    ) {
+                        Text(
+                            text = if (state.escalated) "Acknowledge local escalation" else "I'm OK — cancel escalation",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                    }
+                }
+            }
+        }
+
         Text("Runtime permissions", style = MaterialTheme.typography.titleMedium)
         PermissionRow("Microphone", micGranted, onRequestMic)
         PermissionRow("Camera", cameraGranted, onRequestCamera)
@@ -116,7 +159,12 @@ private fun PermissionRow(label: String, granted: Boolean, onRequest: () -> Unit
         if (granted) {
             Text("Granted", style = MaterialTheme.typography.bodySmall)
         } else {
-            Button(onClick = onRequest) { Text("Request") }
+            Button(
+                onClick = onRequest,
+                modifier = Modifier.heightIn(min = 56.dp).semantics {
+                    contentDescription = "Request $label permission"
+                },
+            ) { Text("Request") }
         }
     }
 }
@@ -221,27 +269,24 @@ fun HistorySection(events: List<LocalSosEvent>, onClear: () -> Unit) {
 
 @Composable
 fun StatusSection(modelAssets: List<String>) {
-    val statuses = listOf(Modality.AUDIO, Modality.MOTION, Modality.VISION, Modality.FUSION).map { modality ->
-        ModelStatus(
-            modality = modality,
-            version = "not available",
-            loaded = false,
-            quantized = false,
-            lastInferenceMs = null,
-        )
-    }
+    val modalities = listOf(Modality.AUDIO, Modality.MOTION, Modality.VISION, Modality.FUSION)
     SectionBody {
         Text("Model status", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            "Interpreter binding: UNAVAILABLE (no interpreter bound)",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.error,
+        )
         Text(
             "Bundled .tflite assets: ${if (modelAssets.isEmpty()) "none found" else modelAssets.joinToString()}",
             style = MaterialTheme.typography.bodyMedium,
         )
-        statuses.forEach { status ->
+        modalities.forEach { modality ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("${status.modality.name}: not loaded", style = MaterialTheme.typography.titleMedium)
-                    Text("Version: ${status.version}")
-                    Text("Last inference: not measured")
+                    Text("${modality.name}: UNAVAILABLE", style = MaterialTheme.typography.titleMedium)
+                    Text("Version: UNAVAILABLE")
+                    Text("Last inference: UNAVAILABLE")
                 }
             }
         }
@@ -249,7 +294,8 @@ fun StatusSection(modelAssets: List<String>) {
             "Manual SOS does not consult any of these models and works with none of them loaded.",
             style = MaterialTheme.typography.bodySmall,
         )
-        // TODO(models): bind a trained FusionEngine interpreter only when a real artifact ships.
+        // TODO(models): bind a trained FusionEngine interpreter and publish measured
+        //   ModelStatus values only when a real .tflite artifact ships.
     }
 }
 
@@ -261,8 +307,13 @@ fun PrivacySection(
     fusionEnabled: Boolean,
     evidenceConsent: Boolean,
     locationConsent: Boolean,
+    cloudAlertOptIn: Boolean,
+    highContrast: Boolean,
+    testMode: Boolean,
     onSetModality: (Modality, Boolean) -> Unit,
     onSetEvidenceConsent: (Boolean) -> Unit,
+    onSetCloudAlertOptIn: (Boolean) -> Unit,
+    onToggleHighContrast: (Boolean) -> Unit,
     onToggleLocationConsent: (Boolean) -> Unit,
 ) {
     SectionBody {
@@ -278,8 +329,28 @@ fun PrivacySection(
         ToggleRow("Fusion detection", fusionEnabled) { onSetModality(Modality.FUSION, it) }
         ToggleRow("Evidence upload consent", evidenceConsent, onSetEvidenceConsent)
         Text(
-            "Evidence upload stays off unless explicitly granted; no upload is wired in this " +
-                "build and Firebase config is optional.",
+            "Evidence upload stays off unless explicitly granted; this screen enqueues no upload " +
+                "and Firebase config is optional.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        ToggleRow(
+            label = "Cloud alert opt-in (alerts topic)",
+            checked = cloudAlertOptIn,
+            onCheckedChange = onSetCloudAlertOptIn,
+            enabled = !testMode,
+        )
+        Text(
+            if (testMode) {
+                "Test mode is on: the opt-in cannot be changed and no external service is contacted."
+            } else {
+                "Opt-in is stored locally and off by default; enabling it attempts an alerts-topic " +
+                    "subscription. Manual SOS and its escalation still stay local only."
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
+        ToggleRow("High-contrast display", highContrast, onToggleHighContrast)
+        Text(
+            "High contrast uses a black/white palette with a bright error colour as a fallback.",
             style = MaterialTheme.typography.bodySmall,
         )
         ToggleRow("Allow coarse location on local events", locationConsent, onToggleLocationConsent)
@@ -292,13 +363,23 @@ fun PrivacySection(
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            modifier = Modifier.semantics { contentDescription = label },
+        )
     }
 }

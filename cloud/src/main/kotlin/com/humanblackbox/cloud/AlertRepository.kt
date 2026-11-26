@@ -1,8 +1,17 @@
 package com.humanblackbox.cloud
 
 import android.content.Context
+import com.humanblackbox.data.OutboundKind
+import com.humanblackbox.data.OutboundQueue
 
-enum class AlertDispatchResult { SENT, SKIPPED_UNCONFIGURED, FAILED }
+enum class AlertDispatchResult {
+    SENT,
+    SKIPPED_UNCONFIGURED,
+    FAILED,
+    OFFLINE,
+    EMPTY,
+    INVALID,
+}
 
 /**
  * Single alert entry point. The type only accepts [MinimalAlert], so a raw
@@ -16,9 +25,11 @@ interface AlertDispatcher {
 /**
  * Firestore-backed dispatcher for minimal metadata alerts.
  *
- * Retry/backoff is owned by WorkManager (see MinimalAlertSyncWorker): transient
- * failures return FAILED so the worker can retry with exponential backoff,
- * while a missing Firebase configuration is a permanent SKIPPED result.
+ * Offline-first flow: [dispatchPending] pulls the oldest queued metadata item, checks
+ * connectivity, then dispatches exactly six fields. Successful and permanently skipped
+ * items are removed; transient failures increment the attempt count so the worker's
+ * exponential backoff can retry without duplicating state. Missing Firebase configuration
+ * is permanent and never retried.
  */
 class FirestoreAlertRepository(
     private val context: Context,
@@ -30,5 +41,29 @@ class FirestoreAlertRepository(
             gateway.sendMinimalAlert(alert)
             AlertDispatchResult.SENT
         }.getOrElse { AlertDispatchResult.FAILED }
+    }
+
+    suspend fun dispatchPending(queue: OutboundQueue): AlertDispatchResult {
+        if (ConnectivityGuard.isOffline(context)) return AlertDispatchResult.OFFLINE
+        val item = queue.next(OutboundKind.METADATA_ALERT) ?: return AlertDispatchResult.EMPTY
+        val metadata = item.metadata ?: run {
+            queue.remove(item.id)
+            return AlertDispatchResult.INVALID
+        }
+        val alert = runCatching { metadata.toMinimalAlert() }.getOrElse {
+            queue.remove(item.id)
+            return AlertDispatchResult.INVALID
+        }
+        return when (val result = dispatch(alert)) {
+            AlertDispatchResult.SENT, AlertDispatchResult.SKIPPED_UNCONFIGURED -> {
+                queue.remove(item.id)
+                result
+            }
+            AlertDispatchResult.FAILED -> {
+                queue.recordAttempt(item.id)
+                result
+            }
+            else -> result
+        }
     }
 }

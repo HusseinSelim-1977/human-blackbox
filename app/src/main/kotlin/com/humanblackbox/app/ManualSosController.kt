@@ -22,6 +22,17 @@ interface ManualSosController {
     fun trigger(testMode: Boolean): Decision
 }
 
+/**
+ * Local check-in shown after a manual SOS. [secondsLeft] counts down from 20 s;
+ * cancellation and escalation both stay on this device. No call, SMS, contact
+ * or cloud alert is produced from this state.
+ */
+data class LocalCheckInState(
+    val testMode: Boolean,
+    val secondsLeft: Int,
+    val escalated: Boolean,
+)
+
 /** Default controller: fully local, usable without models or credentials. */
 class LocalManualSosController : ManualSosController {
     override fun trigger(testMode: Boolean): Decision = Decision(
@@ -45,10 +56,10 @@ class LocalManualSosController : ManualSosController {
  * Notification permission is requested separately; if the user denies it the
  * system drops the notification and the UI does not claim it was displayed.
  *
- * Wired: local notification + local event record only.
- * Placeholder: no emergency call, SMS, contact alert or cloud alert is sent.
- * TODO(cloud): only after explicit consent and a configured Firebase project,
- *   consider an opt-in alert gateway call; test mode must remain local-only.
+ * Wired: local notification + local event record only. The optional cloud
+ * opt-in is a separate, explicit FCM topic subscription from Privacy; manual
+ * SOS itself never dispatches an alert, evidence or a network request.
+ * Placeholder: no emergency call, SMS or contact alert is sent.
  */
 class LocalAlertNotifier(context: Context) {
     private val appContext = context.applicationContext
@@ -56,24 +67,52 @@ class LocalAlertNotifier(context: Context) {
 
     fun post(decision: Decision, testMode: Boolean) {
         createChannel()
+        val title = if (testMode) "TEST Manual SOS" else "Manual SOS"
+        val notification = Notification.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_sos_notification)
+            .setContentTitle(title)
+            .setContentText("Local event recorded. Check in to cancel local escalation.")
+            .setContentIntent(openAppIntent())
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setAutoCancel(false)
+            .build()
+        manager.notify(if (testMode) TEST_NOTIFICATION_ID else SOS_NOTIFICATION_ID, notification)
+    }
+
+    /** Second local notification when the check-in window expires unanswered. */
+    fun postEscalation(testMode: Boolean) {
+        createChannel()
+        val title = if (testMode) {
+            "TEST check-in missed — local escalation"
+        } else {
+            "Check-in missed — local escalation"
+        }
+        val notification = Notification.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_sos_notification)
+            .setContentTitle(title)
+            .setContentText("No check-in received. Local alert only: no call, SMS or service contacted.")
+            .setContentIntent(openAppIntent())
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setAutoCancel(false)
+            .build()
+        manager.notify(if (testMode) TEST_ESCALATION_ID else ESCALATION_ID, notification)
+    }
+
+    /** Clears the local alert and any local escalation after a check-in. */
+    fun clear(testMode: Boolean) {
+        manager.cancel(if (testMode) TEST_NOTIFICATION_ID else SOS_NOTIFICATION_ID)
+        manager.cancel(if (testMode) TEST_ESCALATION_ID else ESCALATION_ID)
+    }
+
+    private fun openAppIntent(): PendingIntent {
         val openApp = Intent(appContext, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val pendingIntent = PendingIntent.getActivity(
+        return PendingIntent.getActivity(
             appContext,
             0,
             openApp,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val title = if (testMode) "TEST Manual SOS" else "Manual SOS"
-        val notification = Notification.Builder(appContext, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_sos_notification)
-            .setContentTitle(title)
-            .setContentText("Local event recorded. No call placed and no service contacted.")
-            .setContentIntent(pendingIntent)
-            .setCategory(Notification.CATEGORY_ALARM)
-            .setAutoCancel(false)
-            .build()
-        manager.notify(if (testMode) TEST_NOTIFICATION_ID else SOS_NOTIFICATION_ID, notification)
     }
 
     private fun createChannel() {
@@ -92,5 +131,7 @@ class LocalAlertNotifier(context: Context) {
         private const val CHANNEL_ID = "manual_sos_local"
         private const val SOS_NOTIFICATION_ID = 1001
         private const val TEST_NOTIFICATION_ID = 1002
+        private const val ESCALATION_ID = 1003
+        private const val TEST_ESCALATION_ID = 1004
     }
 }

@@ -26,7 +26,7 @@ import kotlin.math.max
  */
 class FusionEngine(
     private val interpreter: Interpreter,
-    override val modelVersion: String = "fusion-cnn-gru-attn-v2-int8",
+    val modelVersion: String = "fusion-cnn-gru-attn-v2-int8",
 ) {
     private var consecutiveHigh = 0
     private var consecutiveLow = 0
@@ -122,8 +122,8 @@ class FusionEngine(
 
     companion object {
         const val HISTORY_TICKS = 8
-        const val FEATURES = 3 * (CLASS_COUNT + 1) + 3 // 8 probabilities per modality + global metadata
-        const val OUTPUT_SIZE = 1 + CLASS_COUNT + 3
+        val FEATURES = 3 * (CLASS_COUNT + 1) + 3 // 8 probabilities per modality + global metadata
+        val OUTPUT_SIZE = 1 + CLASS_COUNT + 3
         val MODALITIES = listOf(Modality.AUDIO, Modality.MOTION, Modality.VISION)
     }
 }

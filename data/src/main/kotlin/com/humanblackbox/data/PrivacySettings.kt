@@ -19,6 +19,8 @@ private val Context.privacyDataStore by preferencesDataStore("human_blackbox_pri
  * or ARGB frames.
  */
 class PrivacySettings(private val context: Context) {
+    private val auditLogger by lazy { PrivacyAuditLogger(context.applicationContext) }
+
     private fun modalityKey(modality: Modality) =
         booleanPreferencesKey("modality_${modality.name.lowercase()}_enabled")
 
@@ -27,6 +29,13 @@ class PrivacySettings(private val context: Context) {
 
     suspend fun setModalityEnabled(modality: Modality, enabled: Boolean) {
         context.privacyDataStore.edit { it[modalityKey(modality)] = enabled }
+        runCatching {
+            auditLogger.append(
+                AuditActor.MODALITY,
+                if (enabled) AuditEvent.MODALITY_ENABLED else AuditEvent.MODALITY_DISABLED,
+                AuditOutcome.ALLOWED,
+            )
+        }
     }
 
     fun evidenceUploadConsent(): Flow<Boolean> =
@@ -34,6 +43,13 @@ class PrivacySettings(private val context: Context) {
 
     suspend fun setEvidenceUploadConsent(enabled: Boolean) {
         context.privacyDataStore.edit { it[CONSENT_EVIDENCE_UPLOAD] = enabled }
+        runCatching {
+            auditLogger.append(
+                AuditActor.CONSENT,
+                if (enabled) AuditEvent.CONSENT_GRANTED else AuditEvent.CONSENT_REVOKED,
+                AuditOutcome.ALLOWED,
+            )
+        }
     }
 
     companion object {

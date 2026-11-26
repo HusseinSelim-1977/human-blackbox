@@ -47,6 +47,8 @@ data class AnonymizedDecisionLog(
 class BlackBoxDataRepository private constructor(
     private val database: BlackBoxDatabase,
     private val evidenceStore: SecureEvidenceStore,
+    private val keyManager: KeyRotationManager,
+    private val auditLogger: PrivacyAuditLogger,
 ) {
     private val dao: BlackBoxDao = database.blackBoxDao()
 
@@ -92,6 +94,14 @@ class BlackBoxDataRepository private constructor(
             dao.upsertEvent(history)
             dao.insertDecisionLog(log)
         }
+        runCatching {
+            auditLogger.append(
+                AuditActor.DECISION,
+                AuditEvent.DECISION_RECORDED,
+                AuditOutcome.ALLOWED,
+                decision.timestampMs,
+            )
+        }
     }
 
     suspend fun upsertModelStatus(status: ModelStatus) {
@@ -119,6 +129,9 @@ class BlackBoxDataRepository private constructor(
             dao.deleteAllModelStatuses()
         }
         evidenceStore.deleteAll()
+        runCatching {
+            auditLogger.append(AuditActor.STORAGE, AuditEvent.EVIDENCE_DELETED, AuditOutcome.ALLOWED)
+        }
     }
 
     /**
@@ -137,15 +150,33 @@ class BlackBoxDataRepository private constructor(
         evidenceStore.listEventIds()
             .filterNot { it in retainedIds }
             .forEach { evidenceStore.delete(it) }
+        runCatching {
+            auditLogger.append(AuditActor.RETENTION, AuditEvent.PRUNE_COMPLETED, AuditOutcome.ALLOWED)
+            auditLogger.prune()
+        }
     }
 
     /** Opaque on-device IDs only; no plaintext paths or payloads are exposed. */
     suspend fun storedEvidenceEventIds(): List<String> = evidenceStore.listEventIds()
 
+    /** Re-encrypts evidence under the next Keystore alias without exposing key material. */
+    suspend fun rotateEvidenceKeys(): KeyRotationManager.RotationResult {
+        val result = keyManager.rotate(evidenceStore)
+        runCatching {
+            auditLogger.append(AuditActor.KEY_MANAGEMENT, AuditEvent.KEYS_ROTATED, AuditOutcome.ALLOWED)
+        }
+        return result
+    }
+
+    /** Bucketed, anonymized privacy audit rows for local inspection only. */
+    suspend fun auditEntries(): List<PrivacyAuditEntry> = auditLogger.entries()
+
     companion object {
         fun create(context: Context): BlackBoxDataRepository = BlackBoxDataRepository(
             database = BlackBoxDatabase.get(context),
             evidenceStore = SecureEvidenceStore(context),
+            keyManager = KeyRotationManager(context),
+            auditLogger = PrivacyAuditLogger(context.applicationContext),
         )
     }
 }

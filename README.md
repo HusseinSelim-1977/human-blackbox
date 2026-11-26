@@ -30,7 +30,9 @@ are present. The runnable implementation today remains the Python pipeline
 below with heuristic fallbacks (baseline suite reported as 159 tests). Nothing
 is downloaded and no result is invented by default. Before continuing, the
 operator must supply the SDK/wrapper, dataset paths and licenses, model
-artifacts, Firebase configuration/secrets, and target hardware.
+artifacts, Firebase configuration/secrets, and target hardware. All v2 metrics
+remain **TBD / unmeasured**; no number in this repository is a v2 measurement
+without a recorded command, environment, manifest and model checksum.
 
 Documentation for the unresolved v2 work:
 
@@ -41,6 +43,8 @@ Documentation for the unresolved v2 work:
 | [`docs/DEPLOYMENT_GUIDE.md`](./docs/DEPLOYMENT_GUIDE.md) | Firebase placeholders, cloud-only components, privacy defaults, required inputs |
 | [`docs/PHASED_PLAN.md`](./docs/PHASED_PLAN.md) | Phases 1–7, gates and blockers |
 | [`docs/EVALUATION_PLAN.md`](./docs/EVALUATION_PLAN.md) | Metrics, splits and conditions; no results claimed |
+| [`docs/IMPLEMENTATION_PLAN.md`](./docs/IMPLEMENTATION_PLAN.md) | Exact file tree, dependency order, interfaces, state machine, commands and rollout |
+| [`scripts/README.md`](./scripts/README.md) | Offline CLI examples and supplied-data-only benchmark rules |
 
 ## Pipeline
 
@@ -108,7 +112,32 @@ python swarm/barrier.py
 No TensorFlow, PyTorch or ultralytics install is required: each detector loads
 its model when present and otherwise uses a deterministic signal-processing
 fallback, recorded as `mode: heuristic` in `raw_features` and documented in
-[`docs/ASSUMPTIONS.md`](./docs/ASSUMPTIONS.md).
+[`docs/ASSUMPTIONS.md`](./docs/ASSUMPTIONS.md). The baseline test count is a
+reported baseline fact, not a v2 result.
+
+### Field validation (offline)
+
+```bash
+python3 -m compileall -q scripts/python
+python3 scripts/python/validate_repo.py
+```
+
+`validate_repo.py` checks the 11 module directories and their Gradle build
+files, the required root Gradle files, relative links in the Markdown docs, and
+numeric result claims written as prose. It exits 0 with a short PASS summary on
+a clean checkout and 1 with a list of failures otherwise. `TBD`, targets,
+budgets, assumptions, examples and cited literature are allowed; no network,
+Gradle, SDK or device is used. **It validates repository hygiene only — it does
+not compile, train, benchmark or measure anything.**
+
+The `scripts/python/` CLIs likewise operate on operator-supplied files only:
+they never download data/models and never run the app. In particular,
+`benchmark.py` summarises samples measured elsewhere and can only report a
+PASS/FAIL against a budget you supply; its verdict is not an app or device
+result. Record command, date, hardware/OS, dataset manifest hash and model
+checksum with any value, otherwise keep it `TBD / unmeasured`. Full CLI
+examples and caveats are in [`scripts/README.md`](./scripts/README.md) and
+[`docs/IMPLEMENTATION_PLAN.md`](./docs/IMPLEMENTATION_PLAN.md).
 
 ## Configuration
 

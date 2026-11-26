@@ -17,43 +17,91 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.humanblackbox.cloud.FcmRegistrationStatus
+import com.humanblackbox.cloud.FcmTopicRegistrar
 import com.humanblackbox.core.Decision
 import com.humanblackbox.core.Modality
 import com.humanblackbox.data.PrivacySettings
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private enum class AppSection(val label: String) {
     SOS("SOS"), CONTACTS("Contacts"), HISTORY("History"), MODELS("Models"), PRIVACY("Privacy"),
 }
 
+/** Inside the required 10–30 s check-in window. */
+private const val CHECK_IN_SECONDS = 20
+
+private val CheckInStateSaver = listSaver<LocalCheckInState?, Any>(
+    save = { state ->
+        if (state == null) {
+            emptyList()
+        } else {
+            listOf(state.testMode, state.secondsLeft, state.escalated)
+        }
+    },
+    restore = { values ->
+        if (values.size == 3) {
+            LocalCheckInState(values[0] as Boolean, values[1] as Int, values[2] as Boolean)
+        } else {
+            null
+        }
+    },
+)
+
+/** Explicit fallback when system colours do not give enough contrast. */
+private val HighContrastColors = darkColorScheme(
+    primary = Color.White,
+    onPrimary = Color.Black,
+    secondary = Color.White,
+    onSecondary = Color.Black,
+    background = Color.Black,
+    onBackground = Color.White,
+    surface = Color.Black,
+    onSurface = Color.White,
+    surfaceVariant = Color(0xFF222222),
+    onSurfaceVariant = Color.White,
+    error = Color(0xFFFF5252),
+    onError = Color.Black,
+)
+
 /**
  * UI shell. Everything shown here is either user-entered, persisted locally,
  * or explicitly marked unavailable. No model, benchmark or contact is faked.
  *
- * Wired: Compose navigation, runtime permission requests, manual SOS controller,
- * encrypted local contacts/history, privacy kill switches from the data module.
- * Placeholder: model inference, cloud alerts and evidence upload are not wired.
+ * Wired: Compose navigation, runtime permission requests, manual SOS controller
+ * with a cancelable local check-in, encrypted local contacts/history, privacy
+ * kill switches, high-contrast fallback and an explicit FCM alert opt-in.
+ * Model inference is not wired; manual SOS and its escalation stay local-only.
  */
 class MainActivity : ComponentActivity() {
     private val privacySettings by lazy { PrivacySettings(applicationContext) }
@@ -64,9 +112,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            var highContrast by rememberSaveable { mutableStateOf(false) }
+            MaterialTheme(colorScheme = if (highContrast) HighContrastColors else lightColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    HumanBlackBoxApp(privacySettings, eventStore, sosController, notifier)
+                    HumanBlackBoxApp(
+                        privacySettings = privacySettings,
+                        eventStore = eventStore,
+                        sosController = sosController,
+                        notifier = notifier,
+                        highContrast = highContrast,
+                        onToggleHighContrast = { highContrast = it },
+                    )
                 }
             }
         }
@@ -79,6 +135,8 @@ private fun HumanBlackBoxApp(
     eventStore: LocalEventStore,
     sosController: ManualSosController,
     notifier: LocalAlertNotifier,
+    highContrast: Boolean,
+    onToggleHighContrast: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -92,6 +150,11 @@ private fun HumanBlackBoxApp(
     var notice by remember { mutableStateOf<String?>(null) }
     var permissionEpoch by remember { mutableIntStateOf(0) }
     var pendingLocationConsent by remember { mutableStateOf(false) }
+    var cloudAlertOptIn by remember { mutableStateOf(eventStore.cloudAlertOptIn()) }
+    var checkIn by rememberSaveable(stateSaver = CheckInStateSaver) {
+        mutableStateOf<LocalCheckInState?>(null)
+    }
+    var checkInEpoch by rememberSaveable { mutableIntStateOf(0) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -124,6 +187,21 @@ private fun HumanBlackBoxApp(
         context.assets.list("").orEmpty().filter { it.endsWith(".tflite", ignoreCase = true) }
     }
 
+    LaunchedEffect(checkInEpoch) {
+        if (checkInEpoch == 0) return@LaunchedEffect
+        while ((checkIn?.secondsLeft ?: 0) > 0 && checkIn?.escalated == false) {
+            delay(1_000)
+            val current = checkIn ?: return@LaunchedEffect
+            checkIn = current.copy(secondsLeft = current.secondsLeft - 1)
+        }
+        val current = checkIn ?: return@LaunchedEffect
+        if (!current.escalated) {
+            checkIn = current.copy(escalated = true)
+            notifier.postEscalation(current.testMode)
+            notice = "No check-in received. Local escalation only — no call, SMS or service contacted."
+        }
+    }
+
     fun onSos() {
         val decision = sosController.trigger(testMode)
         val location = if (locationConsent && hasLocationPermission(context)) CoarseLocation.read(context) else null
@@ -141,10 +219,24 @@ private fun HumanBlackBoxApp(
         events = eventStore.events()
         lastDecision = decision
         notifier.post(decision, testMode)
+        checkIn = LocalCheckInState(testMode = testMode, secondsLeft = CHECK_IN_SECONDS, escalated = false)
+        checkInEpoch++
         notice = if (testMode) {
-            "TEST SOS recorded locally. No external service contacted."
+            "TEST SOS recorded locally. Check in within $CHECK_IN_SECONDS s; no external service contacted."
         } else {
-            "Manual SOS recorded locally. No emergency call placed."
+            "Manual SOS recorded locally. Check in within $CHECK_IN_SECONDS s; no emergency call placed."
+        }
+    }
+
+    fun onConfirmCheckIn() {
+        val current = checkIn ?: return
+        notifier.clear(current.testMode)
+        checkIn = null
+        checkInEpoch++
+        notice = if (current.escalated) {
+            "Local escalation acknowledged. No external service contacted."
+        } else {
+            "Check-in confirmed. Escalation cancelled; no external service contacted."
         }
     }
 
@@ -163,6 +255,8 @@ private fun HumanBlackBoxApp(
                     lastDecision = lastDecision,
                     notice = notice,
                     testMode = testMode,
+                    checkIn = checkIn,
+                    onConfirmCheckIn = { onConfirmCheckIn() },
                     micGranted = micGranted,
                     cameraGranted = cameraGranted,
                     locationGranted = locationGranted,
@@ -212,12 +306,39 @@ private fun HumanBlackBoxApp(
                     fusionEnabled = fusionEnabled,
                     evidenceConsent = evidenceConsent,
                     locationConsent = locationConsent,
+                    cloudAlertOptIn = cloudAlertOptIn,
+                    highContrast = highContrast,
+                    testMode = testMode,
                     onSetModality = { modality, enabled ->
                         scope.launch { privacySettings.setModalityEnabled(modality, enabled) }
                     },
                     onSetEvidenceConsent = { enabled ->
                         scope.launch { privacySettings.setEvidenceUploadConsent(enabled) }
                     },
+                    onSetCloudAlertOptIn = { enabled ->
+                        eventStore.setCloudAlertOptIn(enabled)
+                        cloudAlertOptIn = enabled
+                        if (enabled && !testMode) {
+                            scope.launch {
+                                val result = FcmTopicRegistrar(context.applicationContext).registerForAlerts()
+                                notice = when (result.status) {
+                                    FcmRegistrationStatus.REGISTERED ->
+                                        "Alerts topic registered. Manual SOS still stays local only."
+                                    FcmRegistrationStatus.UNAVAILABLE ->
+                                        "No Firebase configuration; opt-in is stored locally only."
+                                    FcmRegistrationStatus.FAILED ->
+                                        "Registration failed; opt-in is stored locally only."
+                                }
+                            }
+                        } else {
+                            notice = if (enabled) {
+                                "Opt-in stored locally. Turn off test mode to register for alerts."
+                            } else {
+                                "Cloud alert opt-in revoked locally."
+                            }
+                        }
+                    },
+                    onToggleHighContrast = onToggleHighContrast,
                     onToggleLocationConsent = { enabled ->
                         if (enabled) {
                             pendingLocationConsent = true
@@ -239,11 +360,21 @@ private fun HumanBlackBoxApp(
         ) {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Test emergency mode (local only)", modifier = Modifier.weight(1f))
-                Switch(checked = testMode, onCheckedChange = { testMode = it })
+                Switch(
+                    checked = testMode,
+                    onCheckedChange = { testMode = it },
+                    modifier = Modifier.semantics { contentDescription = "Test emergency mode, local only" },
+                )
             }
             Button(
                 onClick = { onSos() },
-                modifier = Modifier.fillMaxWidth().height(112.dp),
+                modifier = Modifier.fillMaxWidth().height(112.dp).semantics {
+                    contentDescription = if (testMode) {
+                        "Test SOS: record a local test event, no external service contacted"
+                    } else {
+                        "Local SOS: record locally, check in to cancel escalation, no emergency call"
+                    }
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
             ) {
                 Text(
@@ -271,6 +402,9 @@ private fun SectionTabs(current: AppSection, onSelect: (AppSection) -> Unit) {
             val selected = item == current
             Button(
                 onClick = { onSelect(item) },
+                modifier = Modifier.heightIn(min = 48.dp).semantics {
+                    contentDescription = "Open ${item.label} section"
+                },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,

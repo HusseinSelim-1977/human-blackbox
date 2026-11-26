@@ -10,13 +10,21 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.humanblackbox.core.Action
 import com.humanblackbox.core.EventType
+import com.humanblackbox.data.AuditActor
+import com.humanblackbox.data.AuditEvent
+import com.humanblackbox.data.AuditOutcome
+import com.humanblackbox.data.OutboundQueue
+import com.humanblackbox.data.PrivacyAuditLogger
+import java.util.concurrent.TimeUnit
 
 /**
  * Sends only the six metadata fields of a [MinimalAlert].
  *
- * Privacy: the WorkManager input contains no sensor samples and no evidence
- * reference. Retry/backoff is delegated to WorkManager (default exponential
- * backoff on Result.retry()); a missing Firebase configuration is terminal.
+ * Privacy: the WorkManager input contains six typed metadata fields, no sensor samples and
+ * no evidence reference. On execution the item is placed in [OutboundQueue] idempotently,
+ * then drained by the repository with an offline guard and exponential backoff. WorkManager
+ * retries are deduplicated by a deterministic queue id; a missing Firebase configuration is
+ * terminal.
  */
 class MinimalAlertSyncWorker(
     appContext: Context,
@@ -25,11 +33,26 @@ class MinimalAlertSyncWorker(
 
     override suspend fun doWork(): Result {
         val alert = runCatching { inputData.toMinimalAlert() }.getOrElse { return Result.failure() }
+        val queue = OutboundQueue(applicationContext)
+        runCatching {
+            queue.enqueueMetadata(alert.toOutboundMetadata(), idempotencyKey = queueKey(alert))
+        }.getOrElse { return Result.retry() }
+
+        val auditLogger = PrivacyAuditLogger(applicationContext)
+        runCatching {
+            auditLogger.append(AuditActor.CLOUD, AuditEvent.ALERT_QUEUED, AuditOutcome.ALLOWED, alert.timestampMs)
+        }
         val repository = FirestoreAlertRepository(applicationContext)
-        return when (repository.dispatch(alert)) {
-            AlertDispatchResult.SENT -> Result.success()
-            AlertDispatchResult.FAILED -> Result.retry()
-            AlertDispatchResult.SKIPPED_UNCONFIGURED -> Result.failure()
+        return when (repository.dispatchPending(queue)) {
+            AlertDispatchResult.SENT -> {
+                runCatching {
+                    auditLogger.append(AuditActor.CLOUD, AuditEvent.ALERT_SENT, AuditOutcome.ALLOWED, alert.timestampMs)
+                }
+                Result.success()
+            }
+            AlertDispatchResult.FAILED, AlertDispatchResult.OFFLINE -> Result.retry()
+            AlertDispatchResult.SKIPPED_UNCONFIGURED -> Result.success()
+            AlertDispatchResult.EMPTY, AlertDispatchResult.INVALID -> Result.success()
         }
     }
 
@@ -51,9 +74,16 @@ class MinimalAlertSyncWorker(
             .putString(KEY_RECOMMENDED_ACTION, alert.recommendedAction.name)
             .build()
 
+        /** Stable across retries so the same alert is never queued twice. */
+        private fun queueKey(alert: MinimalAlert): String =
+            "${alert.timestampMs}-${alert.eventType.name}-${alert.confidence.toBits().toLong()}"
+
         fun enqueue(context: Context, alert: MinimalAlert): Operation {
+            val backoff = BackoffPolicy.DEFAULT
             val request = OneTimeWorkRequestBuilder<MinimalAlertSyncWorker>()
                 .setInputData(inputData(alert))
+                .setBackoffCriteria(backoff.workBackoff(), backoff.initialDelayMs, backoff.initialDelayTimeUnit())
+                .setInitialDelay(backoff.delayMs(0), TimeUnit.MILLISECONDS)
                 .build()
             return WorkManager.getInstance(context).enqueueUniqueWork(
                 "$TAG-${alert.timestampMs}-${alert.eventType.name}",

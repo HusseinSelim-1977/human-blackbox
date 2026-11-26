@@ -8,7 +8,9 @@ import com.google.firebase.storage.FirebaseStorage
 import com.humanblackbox.core.Action
 import com.humanblackbox.core.Decision
 import com.humanblackbox.core.EventType
+import com.humanblackbox.data.OutboundMetadata
 import kotlinx.coroutines.tasks.await
+import java.io.File
 
 /**
  * The complete set of fields allowed to leave the device for an alert.
@@ -40,6 +42,26 @@ fun Decision.toMinimalAlert(coarseLocation: String?, deviceStatus: String): Mini
     coarseLocation = coarseLocation,
     deviceStatus = deviceStatus,
     recommendedAction = recommendedAction,
+)
+
+/** Queue representation of the same six fields; no other data is copied. */
+fun MinimalAlert.toOutboundMetadata(): OutboundMetadata = OutboundMetadata(
+    eventType = eventType.name,
+    confidence = confidence,
+    timestampMs = timestampMs,
+    coarseLocation = coarseLocation,
+    deviceStatus = deviceStatus,
+    recommendedAction = recommendedAction.name,
+)
+
+/** Rebuilds a typed alert from a strictly validated six-field queue item. */
+fun OutboundMetadata.toMinimalAlert(): MinimalAlert = MinimalAlert(
+    eventType = EventType.valueOf(eventType),
+    confidence = confidence,
+    timestampMs = timestampMs,
+    coarseLocation = coarseLocation,
+    deviceStatus = deviceStatus,
+    recommendedAction = Action.valueOf(recommendedAction),
 )
 
 /** Firestore gateway for privacy-preserving alerts. */
@@ -83,34 +105,50 @@ class FirestoreAlertGateway(
 }
 
 internal val SAFE_EVIDENCE_EVENT_ID = Regex("[A-Za-z0-9_-]{1,128}")
+internal val SAFE_ENCRYPTED_PATH = Regex("[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*(\\.v[1-8])?\\.enc")
 
 /**
- * Encrypted-evidence upload is a separate capability and is impossible until
- * the user has explicitly granted consent. Only ciphertext may be passed to
- * [upload]; the caller is responsible for encrypting on-device first.
+ * Encrypted-evidence upload is a separate capability and is impossible until the user has
+ * explicitly granted consent. The public API accepts only an event id and a validated local
+ * `.enc` reference; ciphertext is read from that file on-device and never decrypted here.
  */
 class ConsentedEvidenceUploader(
+    private val context: Context,
     private val storage: FirebaseStorage = FirebaseStorage.getInstance(),
-    private val hasConsent: () -> Boolean,
+    private val hasConsent: suspend () -> Boolean,
 ) {
     /**
-     * Re-checks consent at the moment of upload (not merely at scheduling time)
-     * so a revocation between enqueue and execution is honoured.
+     * Re-reads consent at the moment of upload (not merely at scheduling time), after the
+     * ciphertext is read, so a revocation is honoured immediately before [putBytes].
      */
-    suspend fun upload(eventId: String, encryptedBytes: ByteArray) {
+    suspend fun upload(eventId: String, encryptedPath: String) {
         require(eventId.matches(SAFE_EVIDENCE_EVENT_ID)) { "Invalid evidence event id" }
-        require(encryptedBytes.isNotEmpty()) { "Encrypted evidence is required" }
+        require(encryptedPath.matches(SAFE_ENCRYPTED_PATH) && ".." !in encryptedPath) {
+            "Only local encrypted evidence references are accepted"
+        }
+        val encryptedBytes = readCiphertext(encryptedPath)
         require(hasConsent()) { "Explicit evidence-upload consent is required" }
         storage.reference.child("evidence/$eventId.enc").putBytes(encryptedBytes).await()
     }
 
+    private fun readCiphertext(encryptedPath: String): ByteArray {
+        val file = File(context.filesDir, encryptedPath).canonicalFile
+        val filesRoot = context.filesDir.canonicalFile.toPath()
+        require(file.extension == "enc") { "Only encrypted (.enc) evidence is uploadable" }
+        require(file.toPath().startsWith(filesRoot)) { "Evidence reference is outside app storage" }
+        require(file.isFile && file.length() in 1L..MAX_ENCRYPTED_BYTES) { "Evidence reference is invalid" }
+        return file.readBytes()
+    }
+
     companion object {
+        const val MAX_ENCRYPTED_BYTES = 20L * 1024 * 1024
+
         /** Returns null instead of throwing when Firebase has not been initialised. */
         fun createOrNull(
             context: Context,
-            hasConsent: () -> Boolean,
+            hasConsent: suspend () -> Boolean,
         ): ConsentedEvidenceUploader? =
             if (FirebaseApp.getApps(context).isEmpty()) null
-            else runCatching { ConsentedEvidenceUploader(hasConsent = hasConsent) }.getOrNull()
+            else runCatching { ConsentedEvidenceUploader(context, hasConsent = hasConsent) }.getOrNull()
     }
 }

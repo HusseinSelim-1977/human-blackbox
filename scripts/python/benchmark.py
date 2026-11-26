@@ -1,9 +1,23 @@
 """Summarise latency samples that were already measured elsewhere.
 
-This script never runs the app or a device: it reads operator-supplied JSON/CSV
-numbers in milliseconds and reports descriptive statistics plus a PASS/FAIL
-against a supplied threshold. Outputs are explicitly labelled as supplied
-measurements, not app measurements produced by this script.
+SUPPLIED-DATA-ONLY: the script never runs the app, a device, a model or a
+benchmark suite. It reads JSON/CSV numbers in milliseconds that the operator
+already measured, then reports descriptive statistics and a PASS/FAIL against
+an operator-supplied threshold. Every output is labelled as a supplied
+measurement, never as a result measured by this script.
+
+Accepted input shapes:
+  JSON  a list of millisecond numbers, {"latency_ms": 12.3}, or an object
+        with "values" / "samples" / "measurements" / "latencies" / "results".
+  CSV   one numeric column, or a header row containing "latency_ms" (or
+        another scalar/list key); --column selects an exact header name.
+
+Criteria: --criterion chooses mean, p95 or max. p95 is nearest-rank and
+matches the Kotlin helper in testing/. PASS means selected statistic <=
+--threshold-ms. The verdict describes only the supplied samples: it does not
+establish an app, device or model result. Attach --source-label and record
+date, hardware/OS, dataset manifest hash and model checksum; otherwise label
+any reported value TBD / unmeasured. No network access or download occurs.
 """
 
 from __future__ import annotations
@@ -123,13 +137,17 @@ def summarize(values: list[float], threshold_ms: float, criterion: str) -> dict[
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--input", type=Path, required=True, help="JSON or CSV file of supplied latency samples (ms)")
-    parser.add_argument("--threshold-ms", type=float, required=True, help="latency budget in milliseconds")
-    parser.add_argument("--column", help="CSV column containing latency values")
-    parser.add_argument("--criterion", choices=("p95", "mean", "max"), default="p95", help="statistic compared to the budget (default: p95)")
-    parser.add_argument("--source-label", help="operator label for the supplied file")
-    parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog="\n".join(__doc__.splitlines()[1:]),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--input", type=Path, required=True, help="JSON/CSV file of operator-measured latency samples in ms; none are generated")
+    parser.add_argument("--threshold-ms", type=float, required=True, help="operator-supplied latency budget in ms; required for PASS/FAIL, no default")
+    parser.add_argument("--column", help="exact CSV header holding latency values (auto-detects latency_ms/values/samples/...)")
+    parser.add_argument("--criterion", choices=("p95", "mean", "max"), default="p95", help="statistic compared with the budget; p95 is nearest-rank (default: p95)")
+    parser.add_argument("--source-label", help="label for the supplied source (device/OS/run); echoed in the output")
+    parser.add_argument("--format", choices=("text", "json"), default="text", help="human-readable summary or JSON record of supplied measurements")
     args = parser.parse_args()
 
     try:
